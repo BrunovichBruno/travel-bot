@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -8,8 +8,6 @@ HEADERS = {
                   "Chrome/120.0 Safari/537.36"
 }
 
-# Селекторы основного текста для каждого источника.
-# Если сайта нет в списке — используется fallback (все <p> внутри <article>).
 SELECTORS = {
     "lenta.ru": "div.topic-body__content",
     "ria.ru": "div.article__body",
@@ -32,7 +30,6 @@ def extract_full_text(url):
 
     soup = BeautifulSoup(resp.text, "lxml")
 
-    # Убираем мусор
     for tag in soup(["script", "style", "aside", "nav", "footer", "form"]):
         tag.decompose()
 
@@ -53,3 +50,51 @@ def extract_full_text(url):
         if len(p.get_text(strip=True)) > 40
     )
     return text or None
+
+
+def extract_image(url):
+    """Вытаскивает главную картинку статьи (og:image или первая крупная в тексте)."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+    except Exception as e:
+        print("[extractor] Картинка: не удалось скачать " + url + ": " + str(e))
+        return None
+
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    # 1. og:image
+    og = soup.find("meta", property="og:image")
+    if og and og.get("content"):
+        img = og["content"]
+        if img.startswith("//"):
+            img = "https:" + img
+        elif img.startswith("/"):
+            img = urljoin(url, img)
+        return img
+
+    # 2. twitter:image
+    tw = soup.find("meta", attrs={"name": "twitter:image"})
+    if tw and tw.get("content"):
+        img = tw["content"]
+        if img.startswith("//"):
+            img = "https:" + img
+        elif img.startswith("/"):
+            img = urljoin(url, img)
+        return img
+
+    # 3. Первая крупная картинка в статье
+    for img_tag in soup.find_all("img"):
+        src = img_tag.get("src") or img_tag.get("data-src")
+        if not src:
+            continue
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/"):
+            src = urljoin(url, src)
+        # Отсеиваем иконки и мелкие логотипы
+        if any(x in src.lower() for x in ["icon", "logo", "sprite", "avatar", "1x1", "pixel"]):
+            continue
+        return src
+
+    return None
