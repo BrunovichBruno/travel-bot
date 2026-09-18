@@ -90,6 +90,18 @@ REWRITE_PROMPT = """Ты — редактор Telegram-канала про пу�
 Описание источника: {summary}
 """
 
+# --- Фото со стоков, если в самой RSS-записи картинки нет (бесплатно) -------
+# Ключ получить бесплатно и мгновенно на https://www.pexels.com/api/
+# (без карты, без модерации) и положить в GitHub Secret PEXELS_API_KEY.
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY")
+
+# --- Поиск релевантного видео на YouTube (публикуется ссылкой, не файлом) ---
+# Ключ получить в Google Cloud Console: console.cloud.google.com →
+# включить "YouTube Data API v3" → Credentials → Create API key.
+# Бесплатная квота (10 000 юнитов/день) с большим запасом хватает на такой
+# объём постов. Положить в GitHub Secret YOUTUBE_API_KEY.
+YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
+
 # ---------------------------------------------------------------------------
 # Служебные функции
 # ---------------------------------------------------------------------------
@@ -194,13 +206,87 @@ def rewrite_with_gemini(title, summary):
 
 
 def extract_image(entry):
+    """
+    Ищем картинку прямо в RSS-записи — проверяем все распространённые
+    варианты, которые используют разные сайты.
+    """
     if "media_content" in entry and entry.media_content:
-        return entry.media_content[0].get("url")
+        for m in entry.media_content:
+            if m.get("url"):
+                return m["url"]
     if "media_thumbnail" in entry and entry.media_thumbnail:
-        return entry.media_thumbnail[0].get("url")
+        for m in entry.media_thumbnail:
+            if m.get("url"):
+                return m["url"]
+    # enclosure (часто используется на Lonely Planet, Simple Flying и т.д.)
+    for enc in entry.get("enclosures", []):
+        if enc.get("type", "").startswith("image") and enc.get("href"):
+            return enc["href"]
     for link in entry.get("links", []):
-        if link.get("type", "").startswith("image"):
-            return link.get("href")
+        if link.get("type", "").startswith("image") and link.get("href"):
+            return link["href"]
+    # первая картинка прямо в HTML описания/контента статьи
+    html_blob = entry.get("summary", "") or ""
+    if "content" in entry and entry.content:
+        html_blob += " " + entry.content[0].get("value", "")
+    match = re.search(r'<img[^>]+src="([^"]+)"', html_blob)
+    if match:
+        return match.group(1)
+    return None
+
+
+def find_stock_photo(query):
+    """
+    Бесплатный фолбэк, если в RSS-записи фото не нашлось: ищем подходящее
+    стоковое фото на Pexels по ключевым словам заголовка.
+    """
+    if not PEXELS_API_KEY or not query:
+        return None
+    try:
+        resp = requests.get(
+            "https://api.pexels.com/v1/search",
+            params={"query": query, "per_page": 1, "orientation": "landscape"},
+            headers={"Authorization": PEXELS_API_KEY},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        photos = resp.json().get("photos", [])
+        if photos:
+            return photos[0]["src"]["large"]
+    except Exception as e:
+        print(f"[WARN] Поиск фото на Pexels не удался: {e}")
+    return None
+
+
+def find_youtube_video(query):
+    """
+    Ищем один релевантный ролик на YouTube по теме статьи.
+    Возвращает ссылку на видео (не сам файл!) — публикуется отдельным
+    сообщением, Telegram сам покажет превью с плеером.
+    """
+    if not YOUTUBE_API_KEY or not query:
+        return None
+    try:
+        resp = requests.get(
+            "https://www.googleapis.com/youtube/v3/search",
+            params={
+                "part": "snippet",
+                "q": query,
+                "type": "video",
+                "maxResults": 1,
+                "relevanceLanguage": "ru",
+                "safeSearch": "strict",
+                "key": YOUTUBE_API_KEY,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+        if items:
+            video_id = items[0]["id"]["videoId"]
+            return f"https://www.youtube.com/watch?v={video_id}"
+    except Exception as e:
+        print(f"[WARN] Поиск видео на YouTube не удался: {e}")
     return None
 
 
@@ -216,7 +302,16 @@ def build_message(entry, source_title):
         title, body = raw_title, raw_summary
 
     text = f"✈️ <b>{title}</b>\n\n{body}\n\n🔗 Источник: {source_title}\n{url}\n\n{HASHTAGS}"
-    return text
+
+    image_url = extract_image(entry)
+    if not image_url:
+        # ищем по оригинальному (не переписанному) заголовку — в нём обычно
+        # более буквальные и узнаваемые ключевые слова для поиска фото
+        image_url = find_stock_photo(raw_title)
+
+    video_url = find_youtube_video(raw_title)
+
+    return text, image_url, video_url
 
 
 def send_to_telegram(text, image_url=None):
@@ -251,6 +346,24 @@ def send_to_telegram(text, image_url=None):
     return resp
 
 
+def send_video_link(video_url):
+    """Публикует ссылку на YouTube-видео отдельным сообщением — Telegram
+    сам развернёт нативное превью с плеером."""
+    text = f"🎥 Видео по теме:\n{video_url}"
+    api_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID,
+        "text": text,
+        "disable_web_page_preview": False,
+    }
+    resp = requests.post(api_url, data=payload, timeout=30)
+    if resp.status_code != 200:
+        print(f"[ERROR] Не удалось отправить ссылку на видео: {resp.status_code} {resp.text}")
+    else:
+        print("[OK] Ссылка на видео опубликована")
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Основная логика
 # ---------------------------------------------------------------------------
@@ -263,6 +376,8 @@ def main():
     run_limit = min(MAX_POSTS_PER_RUN, max(remaining_today, 0))
 
     print(f"[INFO] Рерайт через Gemini: {'включён' if GEMINI_API_KEY else 'выключен (нет GEMINI_API_KEY)'}")
+    print(f"[INFO] Фото с Pexels (фолбэк): {'включено' if PEXELS_API_KEY else 'выключено (нет PEXELS_API_KEY)'}")
+    print(f"[INFO] Поиск видео на YouTube: {'включён' if YOUTUBE_API_KEY else 'выключен (нет YOUTUBE_API_KEY)'}")
     print(f"[INFO] Опубликовано сегодня ({state['daily_date']}): {state['daily_count']} из {DAILY_POST_LIMIT}")
 
     if run_limit <= 0:
@@ -288,11 +403,13 @@ def main():
             if not matches_keywords(entry):
                 continue
 
-            text = build_message(entry, source_title)
-            image_url = extract_image(entry)
+            text, image_url, video_url = build_message(entry, source_title)
 
             try:
                 send_to_telegram(text, image_url)
+                if video_url:
+                    time.sleep(1)
+                    send_video_link(video_url)
                 state["hashes"].add(h)
                 state["daily_count"] += 1
                 new_posts_count += 1
