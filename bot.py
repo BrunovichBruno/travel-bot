@@ -9,6 +9,7 @@ import re
 import json
 import time
 import hashlib
+import datetime
 import feedparser
 import requests
 
@@ -16,28 +17,44 @@ import requests
 # НАСТРОЙКИ — правьте под свою нишу
 # ---------------------------------------------------------------------------
 
-# Русскоязычные RSS-источники про путешествия.
+# RSS-источники про путешествия. Можно смешивать русскоязычные и
+# иностранные — Gemini сам переведёт и перепишет текст на русский
+# (см. REWRITE_PROMPT ниже).
+#
+# Русскоязычные:
 # lenta.ru/rss/news/travel и lenta.ru/rss/articles/travel — официальные RSS
 # рубрики "Путешествия" (см. lenta.ru/info/posts/export/).
 # ria.ru — общая лента РИА Новости, фильтруется ключевыми словами ниже.
+#
+# Зарубежные (англоязычные travel-издания):
 RSS_FEEDS = [
     "https://lenta.ru/rss/news/travel",
     "https://lenta.ru/rss/articles/travel",
     "https://ria.ru/export/rss2/index.xml",
+    "https://www.lonelyplanet.com/blog/feed",
+    "https://www.travelandleisure.com/feeds/all.rss",
+    "https://simpleflying.com/feed/",
+    "https://www.thepointsguy.com/feed/",
 ]
 
-# Ключевые слова для фильтрации (актуальны в первую очередь для ria.ru,
-# у которой лента общая, а не только про путешествия).
-# Для lenta.ru/rss/*/travel фильтр не нужен — там и так только про travel,
-# но оставляем его как доп. страховку от нерелевантных статей.
+# Ключевые слова для фильтрации — актуальны для общих лент (ria.ru), а также
+# как страховка для остальных источников. Английские слова добавлены для
+# иностранных лент.
 KEYWORDS = [
     "путешеств", "туризм", "турист", "авиабилет", "виза", "отель",
     "отдых", "курорт", "перелет", "перелёт", "аэропорт", "круиз",
     "экскурси", "поездк", "самолет", "самолёт", "гостиниц",
+    "travel", "flight", "flights", "airline", "destination",
+    "hotel", "visa", "trip", "vacation", "tourism", "airport",
 ]
 
-# Сколько постов публиковать за один запуск скрипта (чтобы не заспамить канал)
-MAX_POSTS_PER_RUN = 3
+# Сколько постов публиковать за один запуск скрипта (страховка от заспамливания
+# в рамках одного запуска — реальный лимит теперь держит DAILY_POST_LIMIT ниже)
+MAX_POSTS_PER_RUN = 5
+
+# Сколько постов публиковать за сутки максимум (сквозной лимит, действует
+# независимо от того, сколько раз в день запускается workflow)
+DAILY_POST_LIMIT = 20
 
 # Хэштеги, которые будут добавлены к каждому посту
 HASHTAGS = "#путешествия #туризм"
@@ -56,12 +73,18 @@ GEMINI_URL = (
 )
 
 REWRITE_PROMPT = """Ты — редактор Telegram-канала про путешествия.
-Тебе дан заголовок и краткое описание новости. Перепиши их своими словами
-(не копируй фразы дословно), сделай живо и по-человечески, без канцелярита,
-можно с лёгкой иронией. Не выдумывай факты, которых нет в исходнике.
+Тебе дан заголовок и краткое описание новости — они могут быть на любом
+языке (английском, русском и т.д.). Твоя задача:
+1. Если текст не на русском — переведи его по смыслу на русский.
+2. Перепиши своими словами (не копируй и не переводи дословно фраза
+   в фразу), сделай живо и по-человечески, без канцелярита, можно с лёгкой
+   иронией.
+3. Не выдумывай факты, которых нет в исходнике.
+4. Результат должен быть ПОЛНОСТЬЮ на русском языке, независимо от языка
+   источника.
 
 Верни СТРОГО JSON без markdown-обёртки и без пояснений, в формате:
-{{"title": "короткий цепляющий заголовок", "text": "текст поста 2-4 предложения"}}
+{{"title": "короткий цепляющий заголовок на русском", "text": "текст поста на русском, 2-4 предложения"}}
 
 Заголовок источника: {title}
 Описание источника: {summary}
@@ -75,16 +98,49 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.environ.get("TELEGRAM_CHANNEL_ID")  # например @my_travel_channel или -100xxxxxxxxxx
 
 
-def load_posted():
-    if os.path.exists(POSTED_FILE):
-        with open(POSTED_FILE, "r", encoding="utf-8") as f:
-            return set(json.load(f))
-    return set()
+def today_str():
+    return datetime.datetime.utcnow().strftime("%Y-%m-%d")
 
 
-def save_posted(posted_set):
+def load_state():
+    """
+    Формат файла: {"hashes": [...], "daily_date": "YYYY-MM-DD", "daily_count": N}
+    Сохранена обратная совместимость со старым форматом (просто список хэшей).
+    """
+    if not os.path.exists(POSTED_FILE):
+        return {"hashes": set(), "daily_date": today_str(), "daily_count": 0}
+
+    with open(POSTED_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if isinstance(data, list):
+        # старый формат — просто список хэшей, без счётчика за день
+        return {"hashes": set(data), "daily_date": today_str(), "daily_count": 0}
+
+    state = {
+        "hashes": set(data.get("hashes", [])),
+        "daily_date": data.get("daily_date", today_str()),
+        "daily_count": data.get("daily_count", 0),
+    }
+    # если сутки сменились — обнуляем счётчик за день
+    if state["daily_date"] != today_str():
+        state["daily_date"] = today_str()
+        state["daily_count"] = 0
+    return state
+
+
+def save_state(state):
     with open(POSTED_FILE, "w", encoding="utf-8") as f:
-        json.dump(sorted(posted_set), f, ensure_ascii=False, indent=2)
+        json.dump(
+            {
+                "hashes": sorted(state["hashes"]),
+                "daily_date": state["daily_date"],
+                "daily_count": state["daily_count"],
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 def entry_hash(entry):
@@ -200,13 +256,22 @@ def send_to_telegram(text, image_url=None):
 # ---------------------------------------------------------------------------
 
 def main():
-    posted = load_posted()
+    state = load_state()
     new_posts_count = 0
 
+    remaining_today = DAILY_POST_LIMIT - state["daily_count"]
+    run_limit = min(MAX_POSTS_PER_RUN, max(remaining_today, 0))
+
     print(f"[INFO] Рерайт через Gemini: {'включён' if GEMINI_API_KEY else 'выключен (нет GEMINI_API_KEY)'}")
+    print(f"[INFO] Опубликовано сегодня ({state['daily_date']}): {state['daily_count']} из {DAILY_POST_LIMIT}")
+
+    if run_limit <= 0:
+        print("[INFO] Дневной лимит постов уже исчерпан, выходим без публикаций.")
+        save_state(state)
+        return
 
     for feed_url in RSS_FEEDS:
-        if new_posts_count >= MAX_POSTS_PER_RUN:
+        if new_posts_count >= run_limit:
             break
 
         print(f"[INFO] Читаю ленту: {feed_url}")
@@ -214,11 +279,11 @@ def main():
         source_title = feed.feed.get("title", feed_url)
 
         for entry in feed.entries:
-            if new_posts_count >= MAX_POSTS_PER_RUN:
+            if new_posts_count >= run_limit:
                 break
 
             h = entry_hash(entry)
-            if h in posted:
+            if h in state["hashes"]:
                 continue
             if not matches_keywords(entry):
                 continue
@@ -228,14 +293,16 @@ def main():
 
             try:
                 send_to_telegram(text, image_url)
-                posted.add(h)
+                state["hashes"].add(h)
+                state["daily_count"] += 1
                 new_posts_count += 1
                 time.sleep(2)  # небольшая пауза между постами / запросами к Gemini
             except Exception as e:
                 print(f"[ERROR] Не удалось опубликовать: {e}")
 
-    save_posted(posted)
-    print(f"[DONE] Опубликовано новых постов: {new_posts_count}")
+    save_state(state)
+    print(f"[DONE] Опубликовано новых постов за этот запуск: {new_posts_count}")
+    print(f"[DONE] Итого за сегодня: {state['daily_count']} из {DAILY_POST_LIMIT}")
 
 
 if __name__ == "__main__":
