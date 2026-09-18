@@ -32,7 +32,7 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
-          GEMINI_MODEL: gemini-2.5-flash
+          GEMINI_MODEL: gemini-3.6-flash
           DRY_RUN: "false"
         run: python bot.py
 
