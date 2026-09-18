@@ -7,13 +7,13 @@ from pathlib import Path
 import feedparser
 import requests
 
-from extractor import extract_full_text
+from extractor import extract_full_text, extract_image
 from rewriter import rewrite_article
 from telegraph_publisher import publish_to_telegraph
 
-print("[bot] === BOT VERSION 5 ЗАГРУЖЕНА ===")
+print("[bot] === BOT VERSION 6 ЗАГРУЖЕНА ===")
 
-# ==== ИСТОЧНИКИ RSS ====
+# ==== RSS ====
 RSS_FEEDS = [
     "https://lenta.ru/rss/news/travel",
     "https://lenta.ru/rss/articles/travel",
@@ -25,14 +25,12 @@ RSS_FEEDS = [
     "https://www.interfax.ru/rss.asp",
 ]
 
-# ==== КЛЮЧЕВЫЕ СЛОВА (должны быть в тексте) ====
 KEYWORDS = [
     "туризм", "путешеств", "тур", "отдых", "виза", "авиа",
     "отель", "курорт", "билет", "авиакомпания", "рейс",
     "направление", "страна", "город", "пляж", "экскурсия",
 ]
 
-# ==== ЗАПРЕЩЁННЫЕ СЛОВА (если есть — пропускаем) ====
 BLOCKED_WORDS = [
     "убил", "убийств", "погиб", "погибл", "смерть", "умер",
     "утопул", "утопленник", "изнасил", "ограбил", "ограблени",
@@ -42,19 +40,15 @@ BLOCKED_WORDS = [
     "избил", "избиени", "насили", "домогательств", "разврат",
 ]
 
-# ==== НАСТРОЙКИ ПУБЛИКАЦИИ ====
 MAX_POSTS_PER_RUN = 3
-HASHTAGS = "#ТутИТам #путешествия #кудапоехать"
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 
 MIN_TEXT_LENGTH = 500
 MAX_TEXT_LENGTH = 15000
 
-# Задержка между постами внутри одного запуска (в секундах)
-DELAY_MIN = 600    # 10 минут
-DELAY_MAX = 1200   # 20 минут
+DELAY_MIN = 600
+DELAY_MAX = 1200
 
-# ==== СЕКРЕТЫ ====
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -89,7 +83,26 @@ def has_blocked_words(text):
     return any(bad in text for bad in BLOCKED_WORDS)
 
 
-def send_to_telegram(text):
+def send_photo(photo_url, caption, reply_markup=None):
+    """Отправляет фото с подписью в канал."""
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPhoto"
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID,
+        "photo": photo_url,
+        "caption": caption[:1024],
+        "parse_mode": "HTML",
+    }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    r = requests.post(url, json=payload, timeout=30)
+    if r.status_code != 200:
+        print("[telegram] sendPhoto ошибка: " + str(r.status_code) + " " + r.text)
+        return False
+    return True
+
+
+def send_message(text, reply_markup=None):
+    """Отправляет текстовое сообщение в канал."""
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
@@ -97,15 +110,66 @@ def send_to_telegram(text):
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
-        print("[telegram] Ошибка: " + str(r.status_code) + " " + r.text)
+        print("[telegram] sendMessage ошибка: " + str(r.status_code) + " " + r.text)
+
+
+def build_reply_markup():
+    """Инлайн-кнопки-реакции под постом."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🔥 Круто", "callback_data": "react_fire"},
+                {"text": "🤔 Спорно", "callback_data": "react_think"},
+            ],
+            [
+                {"text": "❤️ В избранное", "callback_data": "react_save"},
+                {"text": "✈️ Хочу туда", "callback_data": "react_want"},
+            ],
+        ]
+    }
+
+
+def build_post_text(rewritten, telegraph_url):
+    """Собирает текст поста с рубрикой, хэштегами и опросом."""
+    title = rewritten["title"]
+    teaser = rewritten.get("teaser", "")
+    hashtags = rewritten.get("hashtags", "#ТутИТам #путешествия")
+    rubric = rewritten.get("rubric_name", "")
+
+    # Иконка рубрики
+    rubric_icons = {
+        "Визы и документы": "🛂",
+        "Цены и билеты": "💰",
+        "Маршруты и направления": "🗺",
+        "Авиа и транспорт": "✈️",
+        "Отели и проживание": "🏨",
+    }
+    icon = rubric_icons.get(rubric, "🌍")
+
+    parts = []
+    if rubric:
+        parts.append(icon + " <b>" + rubric + "</b>")
+        parts.append("")
+    parts.append("<b>" + title + "</b>")
+    parts.append("")
+    if teaser:
+        parts.append(teaser)
+        parts.append("")
+
+    if telegraph_url:
+        parts.append("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+    parts.append("")
+    parts.append(hashtags)
+
+    return "\n".join(parts)
 
 
 def main():
     print("[bot] Запуск. DRY_RUN=" + str(DRY_RUN))
-    print("[bot] Gemini ключ задан: " + str(bool(GEMINI_API_KEY)))
-    print("[bot] Telegram токен задан: " + str(bool(TELEGRAM_BOT_TOKEN)))
     print("[bot] Модель Gemini: " + str(GEMINI_MODEL))
     print("[bot] Источников RSS: " + str(len(RSS_FEEDS)))
 
@@ -135,18 +199,15 @@ def main():
             title = entry.get("title", "")
             summary = entry.get("summary", "")
 
-            # 1. Проверка ключевых слов
             if not matches_keywords(title + " " + summary):
                 continue
 
-            # 2. Проверка запрещённых слов
             if has_blocked_words(title + " " + summary):
                 print("[skip] Заблокировано: " + title[:80])
                 continue
 
             print("[process] " + link)
 
-            # 3. Извлекаем полный текст
             full_text = extract_full_text(link)
             if not full_text:
                 print("[skip] Не удалось извлечь текст: " + link)
@@ -154,58 +215,70 @@ def main():
 
             text_len = len(full_text)
             if text_len < MIN_TEXT_LENGTH:
-                print("[skip] Текст слишком короткий (" + str(text_len) + "): " + link)
+                print("[skip] Текст короткий (" + str(text_len) + ")")
                 continue
             if text_len > MAX_TEXT_LENGTH:
-                print("[skip] Текст слишком длинный (" + str(text_len) + "): " + link)
+                print("[skip] Текст длинный (" + str(text_len) + ")")
                 continue
 
-            # 4. Проверяем полный текст на запрещённые слова
             if has_blocked_words(full_text):
                 print("[skip] Заблокировано в тексте: " + title[:80])
                 continue
 
-            # 5. Рерайт
-            rewritten = rewrite_article(title, full_text, GEMINI_API_KEY, GEMINI_MODEL)
+            # Рерайт (теперь с передачей summary для определения стиля)
+            rewritten = rewrite_article(
+                title, full_text, GEMINI_API_KEY, GEMINI_MODEL, summary=summary
+            )
             if not rewritten or "title" not in rewritten or "text" not in rewritten:
                 print("[skip] Рерайт не удался: " + link)
                 continue
 
-            # 6. Telegraph
+            # Telegraph
             telegraph_url = publish_to_telegraph(
                 title=rewritten["title"],
                 text=rewritten["text"],
                 source_url=link,
             )
 
-            # 7. Формируем пост
-            if telegraph_url:
-                post = (
-                    "<b>" + rewritten["title"] + "</b>\n\n"
-                    + rewritten.get("teaser", "") + "\n\n"
-                    + "👉 <a href='" + telegraph_url + "'>Читать полностью</a>\n\n"
-                    + HASHTAGS
-                )
+            # Картинка
+            image_url = extract_image(link)
+            if image_url:
+                print("[bot] Картинка найдена: " + image_url[:80])
             else:
-                post = (
-                    "<b>" + rewritten["title"] + "</b>\n\n"
-                    + rewritten["text"][:3000] + "\n\n"
-                    + "Источник: " + link + "\n\n" + HASHTAGS
-                )
+                print("[bot] Картинка не найдена, постим текстом")
+
+            # Формируем пост
+            caption = build_post_text(rewritten, telegraph_url)
+            reply_markup = build_reply_markup()
 
             if DRY_RUN:
-                print("[DRY_RUN] " + post[:300] + "...")
+                print("[DRY_RUN] " + caption[:300] + "...")
             else:
-                send_to_telegram(post)
+                sent = False
+                if image_url:
+                    # Если подпись слишком длинная для фото — сокращаем
+                    if len(caption) > 1024:
+                        short = build_post_text(rewritten, telegraph_url)
+                        # Обрезаем до 1000 и добавляем многоточие
+                        caption_short = short[:1000] + "…"
+                        sent = send_photo(image_url, caption_short, reply_markup)
+                        if sent and telegraph_url:
+                            # Дополняем ссылкой отдельным сообщением
+                            send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+                    else:
+                        sent = send_photo(image_url, caption, reply_markup)
+
+                if not sent:
+                    send_message(caption, reply_markup)
+
                 print("[bot] Опубликовано: " + rewritten["title"])
 
             posted.add(link)
             published += 1
 
-            # 8. Задержка между постами (только если публикуем не последний)
             if published < MAX_POSTS_PER_RUN:
                 delay = random.randint(DELAY_MIN, DELAY_MAX)
-                print("[bot] Пауза " + str(delay) + " секунд до следующего поста...")
+                print("[bot] Пауза " + str(delay) + " сек...")
                 time.sleep(delay)
 
     save_posted(posted)
