@@ -11,7 +11,7 @@ from extractor import extract_full_text, extract_image
 from rewriter import rewrite_article
 from telegraph_publisher import publish_to_telegraph
 
-print("[bot] === BOT VERSION 7 ЗАГРУЖЕНА (с опросами) ===")
+print("[bot] === BOT VERSION 8 ЗАГРУЖЕНА (скачивание картинок) ===")
 
 # ==== RSS ====
 RSS_FEEDS = [
@@ -56,6 +56,16 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 POSTED_FILE = Path("posted.json")
 
+# Заголовки, под которыми бот скачивает картинки
+IMAGE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0 Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "Referer": "https://www.google.com/",
+}
+
 
 def load_posted():
     if POSTED_FILE.exists():
@@ -83,7 +93,7 @@ def has_blocked_words(text):
     return any(bad in text for bad in BLOCKED_WORDS)
 
 
-# ==== ВОПРОСЫ И ВАРИАНТЫ ДЛЯ ОПРОСОВ ПО РУБРИКАМ ====
+# ==== ОПРОСЫ ПО РУБРИКАМ ====
 
 POLLS = {
     "Визы и документы": {
@@ -114,30 +124,79 @@ POLLS = {
 
 
 def get_poll_for_rubric(rubric_name):
-    """Возвращает dict с question и options для рубрики."""
     return POLLS.get(rubric_name, POLLS["_default"])
+
+
+# ==== СКАЧИВАНИЕ КАРТИНКИ ====
+
+def download_image(image_url):
+    """Скачивает картинку и возвращает (bytes, filename) или (None, None)."""
+    try:
+        print("[image] Скачиваю: " + image_url[:100])
+        r = requests.get(image_url, headers=IMAGE_HEADERS, timeout=25, stream=True)
+        if r.status_code != 200:
+            print("[image] HTTP " + str(r.status_code))
+            return None, None
+
+        content_type = r.headers.get("Content-Type", "").lower()
+        if "image" not in content_type:
+            print("[image] Не картинка, Content-Type: " + content_type)
+            return None, None
+
+        data = r.content
+        size = len(data)
+        print("[image] Размер: " + str(size) + " байт, тип: " + content_type)
+
+        if size < 5000:
+            print("[image] Слишком маленькая (<5KB), пропускаю")
+            return None, None
+        if size > 10 * 1024 * 1024:
+            print("[image] Слишком большая (>10MB), пропускаю")
+            return None, None
+
+        # Определяем расширение
+        if "jpeg" in content_type or "jpg" in content_type:
+            ext = "jpg"
+        elif "png" in content_type:
+            ext = "png"
+        elif "webp" in content_type:
+            ext = "webp"
+        else:
+            ext = "jpg"
+
+        return data, "photo." + ext
+
+    except Exception as e:
+        print("[image] Ошибка: " + type(e).__name__ + ": " + str(e))
+        return None, None
 
 
 # ==== ОТПРАВКА В TELEGRAM ====
 
-def send_photo(photo_url, caption):
-    """Отправляет фото с подписью в канал."""
+def send_photo_bytes(image_bytes, filename, caption):
+    """Отправляет скачанную картинку как файл в Telegram."""
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPhoto"
-    payload = {
+    files = {
+        "photo": (filename, image_bytes),
+    }
+    data = {
         "chat_id": TELEGRAM_CHANNEL_ID,
-        "photo": photo_url,
         "caption": caption[:1024],
         "parse_mode": "HTML",
     }
-    r = requests.post(url, json=payload, timeout=30)
-    if r.status_code != 200:
-        print("[telegram] sendPhoto ошибка: " + str(r.status_code) + " " + r.text)
+    try:
+        r = requests.post(url, data=data, files=files, timeout=60)
+        if r.status_code != 200:
+            print("[telegram] sendPhoto ошибка: " + str(r.status_code) + " " + r.text[:300])
+            return False
+        print("[telegram] Фото отправлено")
+        return True
+    except Exception as e:
+        print("[telegram] sendPhoto исключение: " + type(e).__name__ + ": " + str(e))
         return False
-    return True
 
 
 def send_message(text):
-    """Отправляет текстовое сообщение в канал."""
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
@@ -147,11 +206,10 @@ def send_message(text):
     }
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
-        print("[telegram] sendMessage ошибка: " + str(r.status_code) + " " + r.text)
+        print("[telegram] sendMessage ошибка: " + str(r.status_code) + " " + r.text[:300])
 
 
 def send_poll(question, options):
-    """Отправляет нативный Telegram-опрос в канал."""
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPoll"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
@@ -162,15 +220,14 @@ def send_poll(question, options):
     }
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
-        print("[telegram] sendPoll ошибка: " + str(r.status_code) + " " + r.text)
+        print("[telegram] sendPoll ошибка: " + str(r.status_code) + " " + r.text[:300])
     else:
-        print("[telegram] Опрос отправлен: " + question)
+        print("[telegram] Опрос отправлен")
 
 
 # ==== СБОРКА ПОСТА ====
 
 def build_post_text(rewritten, telegraph_url):
-    """Собирает текст поста с рубрикой и хэштегами."""
     title = rewritten["title"]
     teaser = rewritten.get("teaser", "")
     hashtags = rewritten.get("hashtags", "#ТутИТам #путешествия")
@@ -194,7 +251,6 @@ def build_post_text(rewritten, telegraph_url):
     if teaser:
         parts.append(teaser)
         parts.append("")
-
     if telegraph_url:
         parts.append("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
     parts.append("")
@@ -273,32 +329,33 @@ def main():
                 source_url=link,
             )
 
+            # Картинка
             image_url = extract_image(link)
-            if image_url:
-                print("[bot] Картинка найдена")
-            else:
-                print("[bot] Картинка не найдена")
-
             caption = build_post_text(rewritten, telegraph_url)
 
             if DRY_RUN:
+                print("[DRY_RUN] Картинка: " + str(image_url))
                 print("[DRY_RUN] " + caption[:300] + "...")
                 poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
-                print("[DRY_RUN] Опрос: " + poll["question"] + " | " + str(poll["options"]))
+                print("[DRY_RUN] Опрос: " + poll["question"])
             else:
                 sent = False
+
                 if image_url:
-                    if len(caption) > 1024:
-                        caption_short = caption[:1000] + "…"
-                        sent = send_photo(image_url, caption_short)
-                        if sent and telegraph_url:
-                            send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
-                    else:
-                        sent = send_photo(image_url, caption)
+                    image_bytes, filename = download_image(image_url)
+                    if image_bytes:
+                        if len(caption) > 1024:
+                            caption_short = caption[:1000] + "…"
+                            sent = send_photo_bytes(image_bytes, filename, caption_short)
+                            if sent and telegraph_url:
+                                send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+                        else:
+                            sent = send_photo_bytes(image_bytes, filename, caption)
+
                 if not sent:
+                    print("[bot] Постим текстом (без картинки)")
                     send_message(caption)
 
-                # Опрос отправляем отдельным сообщением
                 poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
                 time.sleep(3)
                 send_poll(poll["question"], poll["options"])
