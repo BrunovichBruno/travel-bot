@@ -6,6 +6,11 @@ on:
     - cron: '0 8-20/3 * * 0,6'
   workflow_dispatch:
 
+# Запрещаем параллельные запуски одного workflow
+concurrency:
+  group: telegram-poster
+  cancel-in-progress: false
+
 jobs:
   post:
     runs-on: ubuntu-latest
@@ -32,10 +37,12 @@ jobs:
           DRY_RUN: "false"
         run: python bot.py
 
-      - name: Сохранить posted.json и poll_state.json
+      # Коммитим даже если бот упал — чтобы не потерять posted.json
+      - name: Сохранить состояние
+        if: always()
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add posted.json poll_state.json
-          git diff --quiet && git diff --staged --quiet || git commit -m "Update state files [skip ci]"
-          git push
+          git add posted.json poll_state.json telegram_history.json 2>/dev/null || true
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update state [skip ci]"
+          git push || echo "Nothing to push"
