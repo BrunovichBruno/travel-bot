@@ -11,7 +11,7 @@ from extractor import extract_full_text
 from rewriter import rewrite_article
 from telegraph_publisher import publish_to_telegraph
 
-print("[bot] === BOT VERSION 3 ЗАГРУЖЕНА ===")
+print("[bot] === BOT VERSION 4 ЗАГРУЖЕНА ===")
 
 # ==== НАСТРОЙКИ ====
 RSS_FEEDS = [
@@ -28,7 +28,7 @@ DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
 POSTED_FILE = Path("posted.json")
 
@@ -71,7 +71,7 @@ def main():
     print("[bot] Запуск. DRY_RUN=" + str(DRY_RUN))
     print("[bot] Gemini ключ задан: " + str(bool(GEMINI_API_KEY)))
     print("[bot] Telegram токен задан: " + str(bool(TELEGRAM_BOT_TOKEN)))
-    print("[bot] Канал: " + str(TELEGRAM_CHANNEL_ID))
+    print("[bot] Модель Gemini: " + str(GEMINI_MODEL))
 
     posted = load_posted()
     published = 0
