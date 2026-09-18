@@ -2,7 +2,7 @@ import json
 import re
 import google.generativeai as genai
 
-print("[rewriter] === VERSION 4 ЗАГРУЖЕНА ===")
+print("[rewriter] === VERSION 5 ЗАГРУЖЕНА ===")
 
 REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и Там" о путешествиях.
 Перепиши статью ниже своими словами, сохранив ВСЕ факты, числа, названия и имена.
@@ -26,6 +26,14 @@ REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и
 Заголовок: {title}
 Текст: {body}
 """
+
+# Модели в порядке приоритета — если первая не работает, пробуем следующую
+FALLBACK_MODELS = [
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
 
 
 def safe_json_parse(raw):
@@ -59,18 +67,13 @@ def safe_json_parse(raw):
     return None
 
 
-def rewrite_article(title, body, api_key, model_name="gemini-3.6-flash"):
-    if not api_key:
-        print("[rewriter] Нет GEMINI_API_KEY")
-        return None
-
+def try_model(model_name, prompt, api_key):
+    """Одна попытка рерайта конкретной моделью."""
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
-        prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
 
-        print("[rewriter] Отправляю в Gemini (" + model_name + "), длина промпта: " + str(len(prompt)))
-
+        print("[rewriter] Пробую модель: " + model_name)
         resp = model.generate_content(prompt)
 
         raw = ""
@@ -85,11 +88,31 @@ def rewrite_article(title, body, api_key, model_name="gemini-3.6-flash"):
 
         parsed = safe_json_parse(raw)
         if parsed is None:
-            print("[rewriter] JSON не распарсился")
-        else:
-            print("[rewriter] OK, ключи: " + str(list(parsed.keys())))
+            print("[rewriter] JSON не распарсился у модели " + model_name)
+            return None
+
+        print("[rewriter] OK (" + model_name + "), ключи: " + str(list(parsed.keys())))
         return parsed
 
     except Exception as e:
-        print("[rewriter] Ошибка Gemini: " + type(e).__name__ + ": " + str(e))
+        print("[rewriter] Ошибка " + model_name + ": " + type(e).__name__ + ": " + str(e))
         return None
+
+
+def rewrite_article(title, body, api_key, model_name="gemini-3.6-flash"):
+    if not api_key:
+        print("[rewriter] Нет GEMINI_API_KEY")
+        return None
+
+    prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
+
+    # Формируем список: сначала указанная модель, потом fallback-и (без дублей)
+    models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
+
+    for m in models_to_try:
+        result = try_model(m, prompt, api_key)
+        if result is not None:
+            return result
+
+    print("[rewriter] Все модели не сработали")
+    return None
