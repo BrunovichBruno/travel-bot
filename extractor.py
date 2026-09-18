@@ -20,26 +20,21 @@ SELECTORS = {
 
 
 def extract_full_text(url):
-    """Скачивает страницу и вытаскивает основной текст статьи."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.raise_for_status()
     except Exception as e:
-        print("[extractor] Не удалось скачать " + url + ": " + str(e))
+        print("[extractor] Ошибка скачивания " + url + ": " + str(e))
         return None
 
     soup = BeautifulSoup(resp.text, "lxml")
-
     for tag in soup(["script", "style", "aside", "nav", "footer", "form"]):
         tag.decompose()
 
     domain = urlparse(url).netloc.replace("www.", "")
     selector = SELECTORS.get(domain)
 
-    container = None
-    if selector:
-        container = soup.select_one(selector)
-
+    container = soup.select_one(selector) if selector else None
     if not container:
         container = soup.find("article") or soup
 
@@ -53,17 +48,14 @@ def extract_full_text(url):
 
 
 def extract_image(url):
-    """Вытаскивает главную картинку статьи (og:image или первая крупная в тексте)."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
-    except Exception as e:
-        print("[extractor] Картинка: не удалось скачать " + url + ": " + str(e))
+    except Exception:
         return None
 
     soup = BeautifulSoup(resp.text, "lxml")
 
-    # 1. og:image
     og = soup.find("meta", property="og:image")
     if og and og.get("content"):
         img = og["content"]
@@ -73,7 +65,6 @@ def extract_image(url):
             img = urljoin(url, img)
         return img
 
-    # 2. twitter:image
     tw = soup.find("meta", attrs={"name": "twitter:image"})
     if tw and tw.get("content"):
         img = tw["content"]
@@ -83,7 +74,6 @@ def extract_image(url):
             img = urljoin(url, img)
         return img
 
-    # 3. Первая крупная картинка в статье
     for img_tag in soup.find_all("img"):
         src = img_tag.get("src") or img_tag.get("data-src")
         if not src:
@@ -92,9 +82,7 @@ def extract_image(url):
             src = "https:" + src
         elif src.startswith("/"):
             src = urljoin(url, src)
-        # Отсеиваем иконки и мелкие логотипы
         if any(x in src.lower() for x in ["icon", "logo", "sprite", "avatar", "1x1", "pixel"]):
             continue
         return src
-
     return None
