@@ -8,23 +8,26 @@ HEADERS = {
                   "Chrome/120.0 Safari/537.36"
 }
 
-# Селекторы основного текста для популярных источников
+# Селекторы основного текста для каждого источника.
+# Если сайта нет в списке — используется fallback (все <p> внутри <article>).
 SELECTORS = {
     "lenta.ru": "div.topic-body__content",
     "ria.ru": "div.article__body",
     "tass.ru": "div.text-content",
     "rbc.ru": "div.article__text",
     "tourprom.ru": "div.news-text",
+    "atorus.ru": "div.field-item",
+    "interfax.ru": "article",
 }
 
 
-def extract_full_text(url: str):
+def extract_full_text(url):
     """Скачивает страницу и вытаскивает основной текст статьи."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.raise_for_status()
     except Exception as e:
-        print(f"[extractor] Не удалось скачать {url}: {e}")
+        print("[extractor] Не удалось скачать " + url + ": " + str(e))
         return None
 
     soup = BeautifulSoup(resp.text, "lxml")
@@ -40,7 +43,6 @@ def extract_full_text(url: str):
     if selector:
         container = soup.select_one(selector)
 
-    # Fallback: ищем все <p> внутри <article> или всего документа
     if not container:
         container = soup.find("article") or soup
 
