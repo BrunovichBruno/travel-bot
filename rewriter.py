@@ -2,6 +2,8 @@ import json
 import re
 import google.generativeai as genai
 
+print("[rewriter] === VERSION 3 ЗАГРУЖЕНА ===")
+
 REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и Там" о путешествиях.
 Перепиши статью ниже своими словами, сохранив ВСЕ факты, числа, названия и имена.
 
@@ -16,8 +18,9 @@ REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и
 - Не используй переносы строк внутри значений.
 
 Верни ТОЛЬКО валидный JSON, без markdown-обёртки и без пояснений.
+Первый символ ответа — {{, последний — }}.
 Формат строго такой:
-{"title": "заголовок", "text": "текст статьи", "teaser": "1-2 предложения для превью"}
+{{"title": "заголовок", "text": "текст статьи", "teaser": "1-2 предложения для превью"}}
 
 Исходная статья:
 Заголовок: {title}
@@ -25,7 +28,7 @@ REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и
 """
 
 
-def safe_json_parse(raw: str):
+def safe_json_parse(raw):
     """Достаёт JSON из ответа модели максимально живучим способом."""
     if not raw:
         return None
@@ -56,7 +59,7 @@ def safe_json_parse(raw: str):
     return None
 
 
-def rewrite_article(title: str, body: str, api_key: str, model_name: str = "gemini-2.0-flash"):
+def rewrite_article(title, body, api_key, model_name="gemini-2.0-flash"):
     if not api_key:
         print("[rewriter] Нет GEMINI_API_KEY")
         return None
@@ -66,19 +69,27 @@ def rewrite_article(title: str, body: str, api_key: str, model_name: str = "gemi
         model = genai.GenerativeModel(model_name)
         prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
 
-        print(f"[rewriter] Отправляю в Gemini, длина промпта: {len(prompt)}")
+        print("[rewriter] Отправляю в Gemini, длина промпта: " + str(len(prompt)))
+
         resp = model.generate_content(prompt)
 
-        raw = resp.text if hasattr(resp, "text") else str(resp)
-        print(f"[rewriter] RAW ответ (первые 600 символов):\n{raw[:600]}\n---END RAW---")
+        raw = ""
+        if hasattr(resp, "text"):
+            raw = resp.text or ""
+        else:
+            raw = str(resp)
+
+        print("[rewriter] RAW ответ (первые 600 символов):")
+        print(raw[:600])
+        print("---END RAW---")
 
         parsed = safe_json_parse(raw)
         if parsed is None:
             print("[rewriter] JSON не распарсился")
         else:
-            print(f"[rewriter] OK, ключи: {list(parsed.keys())}")
+            print("[rewriter] OK, ключи: " + str(list(parsed.keys())))
         return parsed
 
     except Exception as e:
-        print(f"[rewriter] Ошибка Gemini: {type(e).__name__}: {e}")
+        print("[rewriter] Ошибка Gemini: " + type(e).__name__ + ": " + str(e))
         return None
