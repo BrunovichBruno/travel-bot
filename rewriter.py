@@ -49,7 +49,7 @@ def rewrite_article(title: str, body: str, api_key: str, model_name: str = "gemi
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
-                        resp = model.generate_content(
+        resp = model.generate_content(
             prompt,
             generation_config={
                 "response_mime_type": "application/json",
