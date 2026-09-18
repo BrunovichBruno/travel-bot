@@ -5,17 +5,18 @@ import google.generativeai as genai
 REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и Там" о путешествиях.
 Перепиши статью ниже своими словами, сохранив ВСЕ факты, числа, названия и имена.
 
-Требования:
+Требования к тексту:
 - Стиль: живо, по-человечески, с лёгкой иронией, но без панибратства.
 - Структура: цепляющий заголовок, вводный абзац, 2-4 абзаца основной части, короткий вывод.
 - Добавь 1-2 эмодзи по смыслу, не перебарщивай.
-- НЕ выдумывай факты, которых нет в исходнике. Если чего-то не хватает — опусти.
-- Не используй фразы "в этой статье", "источник сообщает", "как пишет".
+- НЕ выдумывай факты, которых нет в исходнике.
 - В конце — короткий вопрос читателю.
 - Длина: 1200–2000 символов.
-- Внутри строк JSON НЕ используй двойные кавычки " — заменяй их на «ёлочки» или одинарные '.
-- Не используй переносы строк внутри значений — пиши всё одной строкой.
-Верни СТРОГО JSON без markdown-обёртки:
+- Внутри строк НЕ используй двойные кавычки " — заменяй их на «ёлочки» или одинарные '.
+- Не используй переносы строк внутри значений.
+
+Верни ТОЛЬКО валидный JSON, без markdown-обёртки и без пояснений.
+Формат строго такой:
 {"title": "заголовок", "text": "текст статьи", "teaser": "1-2 предложения для превью"}
 
 Исходная статья:
@@ -25,38 +26,62 @@ REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и
 
 
 def safe_json_parse(raw: str):
-    """Достаёт JSON из ответа модели, даже если он обёрнут в ```json ... ```."""
+    """Достаёт JSON из ответа модели максимально живучим способом."""
     if not raw:
         return None
+
     raw = raw.strip()
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
+    raw = raw.strip()
+
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
+        pass
+
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        candidate = match.group(0)
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            fixed = re.sub(r",\s*}", "}", candidate)
+            fixed = re.sub(r",\s*]", "]", fixed)
             try:
-                return json.loads(match.group(0))
+                return json.loads(fixed)
             except json.JSONDecodeError:
-                return None
+                pass
+
     return None
 
 
 def rewrite_article(title: str, body: str, api_key: str, model_name: str = "gemini-2.0-flash"):
     if not api_key:
+        print("[rewriter] Нет GEMINI_API_KEY")
         return None
+
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel(model_name)
         prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
+
+        print(f"[rewriter] Отправляю в Gemini, длина промпта: {len(prompt)}")
         resp = model.generate_content(
             prompt,
-            generation_config={
-                "response_mime_type": "application/json",
-            },
+            generation_config={"response_mime_type": "application/json"},
         )
-        return safe_json_parse(resp.text)
+
+        raw = resp.text if hasattr(resp, "text") else str(resp)
+        print(f"[rewriter] RAW ответ (первые 600 символов):\n{raw[:600]}\n---END RAW---")
+
+        parsed = safe_json_parse(raw)
+        if parsed is None:
+            print("[rewriter] JSON не распарсился")
+        else:
+            print(f"[rewriter] OK, ключи: {list(parsed.keys())}")
+        return parsed
+
     except Exception as e:
-        print(f"[rewriter] Ошибка Gemini: {e}")
+        print(f"[rewriter] Ошибка Gemini: {type(e).__name__}: {e}")
         return None
