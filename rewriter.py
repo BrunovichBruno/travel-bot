@@ -2,7 +2,7 @@ import json
 import re
 import google.generativeai as genai
 
-print("[rewriter] === VERSION 3 ЗАГРУЖЕНА ===")
+print("[rewriter] === VERSION 4 ЗАГРУЖЕНА ===")
 
 REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и Там" о путешествиях.
 Перепиши статью ниже своими словами, сохранив ВСЕ факты, числа, названия и имена.
@@ -59,7 +59,7 @@ def safe_json_parse(raw):
     return None
 
 
-def rewrite_article(title, body, api_key, model_name="gemini-2.0-flash"):
+def rewrite_article(title, body, api_key, model_name="gemini-3.6-flash"):
     if not api_key:
         print("[rewriter] Нет GEMINI_API_KEY")
         return None
@@ -69,7 +69,7 @@ def rewrite_article(title, body, api_key, model_name="gemini-2.0-flash"):
         model = genai.GenerativeModel(model_name)
         prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
 
-        print("[rewriter] Отправляю в Gemini, длина промпта: " + str(len(prompt)))
+        print("[rewriter] Отправляю в Gemini (" + model_name + "), длина промпта: " + str(len(prompt)))
 
         resp = model.generate_content(prompt)
 
