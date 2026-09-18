@@ -2,7 +2,7 @@ import json
 import re
 from google import genai
 
-print("[rewriter] === VERSION 6 ЗАГРУЖЕНА (google-genai) ===")
+print("[rewriter] === VERSION 7 ЗАГРУЖЕНА (gemini-3.6-flash) ===")
 
 REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и Там" о путешествиях.
 Перепиши статью ниже своими словами, сохранив ВСЕ факты, числа, названия и имена.
@@ -27,11 +27,11 @@ REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и
 Текст: {body}
 """
 
-# Модели в порядке приоритета — если первая не работает, пробуем следующую
+# Актуальные модели на 2026 год (согласно документации Google)
 FALLBACK_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
 ]
 
 
@@ -99,7 +99,7 @@ def try_model(client, model_name, prompt):
         return None
 
 
-def rewrite_article(title, body, api_key, model_name="gemini-2.5-flash"):
+def rewrite_article(title, body, api_key, model_name="gemini-3.6-flash"):
     if not api_key:
         print("[rewriter] Нет GEMINI_API_KEY")
         return None
