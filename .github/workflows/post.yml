@@ -3,11 +3,9 @@ name: Автопостинг в Telegram-канал
 on:
   schedule:
     # Будни (Пн-Пт): каждые 2 часа с 6:00 до 22:00 UTC
-    # 6:00, 8:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00, 22:00
     - cron: '0 6-22/2 * * 1-5'
 
     # Выходные (Сб, Вс): каждые 3 часа с 8:00 до 22:00 UTC
-    # 8:00, 11:00, 14:00, 17:00, 20:00
     - cron: '0 8-20/3 * * 0,6'
 
   workflow_dispatch:
@@ -34,7 +32,7 @@ jobs:
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
-          GEMINI_MODEL: gemini-3.6-flash
+          GEMINI_MODEL: gemini-2.5-flash
           DRY_RUN: "false"
         run: python bot.py
 
