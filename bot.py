@@ -6,15 +6,17 @@ from pathlib import Path
 
 import feedparser
 import requests
+from google import genai
 
 from extractor import extract_full_text, extract_image
 from rewriter import rewrite_article
 from telegraph_publisher import publish_to_telegraph
 from poll_manager import should_send_poll, mark_poll_sent, load_poll_state
+from wikipedia_source import get_random_wiki_article
+from wiki_prompts import get_prompt_for_rubric, get_hashtags_for_rubric
 
-print("[bot] === BOT VERSION 9 ЗАГРУЖЕНА (опросы 3/день) ===")
+print("[bot] === BOT VERSION 10 ЗАГРУЖЕНА (wiki + rss) ===")
 
-# ==== RSS ====
 RSS_FEEDS = [
     "https://lenta.ru/rss/news/travel",
     "https://lenta.ru/rss/articles/travel",
@@ -50,6 +52,9 @@ MAX_TEXT_LENGTH = 15000
 DELAY_MIN = 600
 DELAY_MAX = 1200
 
+# Вероятность, что текущий запуск будет Википедией, а не RSS
+WIKI_PROBABILITY = 0.3
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHANNEL_ID = os.getenv("TELEGRAM_CHANNEL_ID")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -62,8 +67,6 @@ IMAGE_HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) "
                   "Chrome/120.0 Safari/537.36",
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Referer": "https://www.google.com/",
 }
 
 
@@ -114,6 +117,18 @@ POLLS = {
         "question": "Что для вас важнее в отеле?",
         "options": ["Чистота и комфорт", "Цена", "Расположение", "Питание и сервис"],
     },
+    "Блюда и кухня": {
+        "question": "Попробовали бы?",
+        "options": ["Уже пробовал(а) 🔥", "Обязательно попробую", "Не моё", "Что-то слышал(а)"],
+    },
+    "Достопримечательности": {
+        "question": "Хотели бы увидеть это?",
+        "options": ["Да, мечтаю! ✨", "Интересно, но не сейчас", "Уже видел(а)", "Не моё"],
+    },
+    "Интересные факты": {
+        "question": "Знали об этом?",
+        "options": ["Впервые слышу!", "Знал(а), но забыл(а)", "Это очевидно", "Интересно!"],
+    },
     "_default": {
         "question": "Что думаете об этом?",
         "options": ["Круто! 🔥", "Интересно, но спорно", "Не моё", "Хочу попробовать"],
@@ -134,28 +149,22 @@ def download_image(image_url):
             return None, None
         content_type = r.headers.get("Content-Type", "").lower()
         if "image" not in content_type:
-            print("[image] Не картинка, Content-Type: " + content_type)
+            print("[image] Не картинка: " + content_type)
             return None, None
         data = r.content
         size = len(data)
-        print("[image] Размер: " + str(size) + " байт, тип: " + content_type)
-        if size < 5000:
-            print("[image] Слишком маленькая (<5KB)")
+        print("[image] Размер: " + str(size) + " байт")
+        if size < 5000 or size > 10 * 1024 * 1024:
+            print("[image] Размер вне нормы")
             return None, None
-        if size > 10 * 1024 * 1024:
-            print("[image] Слишком большая (>10MB)")
-            return None, None
-        if "jpeg" in content_type or "jpg" in content_type:
-            ext = "jpg"
-        elif "png" in content_type:
+        ext = "jpg"
+        if "png" in content_type:
             ext = "png"
         elif "webp" in content_type:
             ext = "webp"
-        else:
-            ext = "jpg"
         return data, "photo." + ext
     except Exception as e:
-        print("[image] Ошибка: " + type(e).__name__ + ": " + str(e))
+        print("[image] Ошибка: " + str(e))
         return None, None
 
 
@@ -170,12 +179,12 @@ def send_photo_bytes(image_bytes, filename, caption):
     try:
         r = requests.post(url, data=data, files=files, timeout=60)
         if r.status_code != 200:
-            print("[telegram] sendPhoto ошибка: " + str(r.status_code) + " " + r.text[:300])
+            print("[telegram] sendPhoto ошибка: " + str(r.status_code) + " " + r.text[:200])
             return False
         print("[telegram] Фото отправлено")
         return True
     except Exception as e:
-        print("[telegram] sendPhoto исключение: " + type(e).__name__ + ": " + str(e))
+        print("[telegram] sendPhoto исключение: " + str(e))
         return False
 
 
@@ -189,7 +198,7 @@ def send_message(text):
     }
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
-        print("[telegram] sendMessage ошибка: " + str(r.status_code) + " " + r.text[:300])
+        print("[telegram] sendMessage ошибка: " + str(r.status_code) + " " + r.text[:200])
 
 
 def send_poll(question, options):
@@ -203,7 +212,7 @@ def send_poll(question, options):
     }
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
-        print("[telegram] sendPoll ошибка: " + str(r.status_code) + " " + r.text[:300])
+        print("[telegram] sendPoll ошибка: " + str(r.status_code))
     else:
         print("[telegram] Опрос отправлен")
 
@@ -219,6 +228,9 @@ def build_post_text(rewritten, telegraph_url):
         "Маршруты и направления": "🗺",
         "Авиа и транспорт": "✈️",
         "Отели и проживание": "🏨",
+        "Блюда и кухня": "🍜",
+        "Достопримечательности": "🏛",
+        "Интересные факты": "💡",
     }
     icon = rubric_icons.get(rubric, "🌍")
     parts = []
@@ -237,15 +249,137 @@ def build_post_text(rewritten, telegraph_url):
     return "\n".join(parts)
 
 
+def rewrite_wiki_article(wiki_data):
+    """Рерайт статьи из Википедии с промптом под рубрику."""
+    rubric = wiki_data["rubric"]
+    prompt_template = get_prompt_for_rubric(rubric)
+
+    # Если статья на английском — сначала переводим, потом рерайтим
+    body = wiki_data["text"]
+    title = wiki_data["title"]
+
+    if wiki_data["lang"] == "en":
+        print("[wiki] Статья на английском, перевожу...")
+        # Используем промпт перевода
+        from wiki_prompts import PROMPT_TRANSLATE
+        prompt = PROMPT_TRANSLATE.format(title=title, body=body[:6000])
+    else:
+        prompt = prompt_template.format(title=title, body=body[:8000])
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print("[wiki] Ошибка клиента: " + str(e))
+        return None
+
+    # Пробуем модели
+    from rewriter import FALLBACK_MODELS, try_model
+
+    models_to_try = [GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != GEMINI_MODEL]
+
+    for m in models_to_try:
+        result = try_model(client, m, prompt)
+        if result is not None:
+            result["rubric_name"] = rubric
+            result["hashtags"] = get_hashtags_for_rubric(rubric)
+            result["style"] = "wiki"
+            result["source_url"] = "https://ru.wikipedia.org/wiki/" + title.replace(" ", "_")
+            return result
+
+    print("[wiki] Все модели не сработали")
+    return None
+
+
+def publish_wiki_article(posted):
+    """Публикует одну тематическую статью из Википедии."""
+    print("[wiki] Запуск тематического потока...")
+    wiki_data = get_random_wiki_article()
+    if not wiki_data:
+        print("[wiki] Не удалось получить статью")
+        return False
+
+    # Проверка на дубликат
+    source_url = "https://ru.wikipedia.org/wiki/" + wiki_data["title"].replace(" ", "_")
+    if source_url in posted:
+        print("[wiki] Дубликат: " + wiki_data["title"])
+        return False
+
+    print("[wiki] Статья: " + wiki_data["title"] + " | Рубрика: " + wiki_data["rubric"])
+
+    rewritten = rewrite_wiki_article(wiki_data)
+    if not rewritten:
+        print("[wiki] Рерайт не удался")
+        return False
+
+    # Telegraph
+    telegraph_url = publish_to_telegraph(
+        title=rewritten["title"],
+        text=rewritten["text"],
+        source_url=source_url,
+    )
+
+    # Картинка из Википедии
+    image_bytes = None
+    filename = None
+    if wiki_data["image"]:
+        image_bytes, filename = download_image(wiki_data["image"])
+        if image_bytes:
+            print("[wiki] Картинка из Википедии скачана")
+        else:
+            print("[wiki] Картинка не скачалась, постим без неё")
+
+    caption = build_post_text(rewritten, telegraph_url)
+
+    if DRY_RUN:
+        print("[DRY_RUN][wiki] " + caption[:300] + "...")
+    else:
+        sent = False
+        if image_bytes:
+            if len(caption) > 1024:
+                caption_short = caption[:1000] + "…"
+                sent = send_photo_bytes(image_bytes, filename, caption_short)
+                if sent and telegraph_url:
+                    send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+            else:
+                sent = send_photo_bytes(image_bytes, filename, caption)
+        if not sent:
+            send_message(caption)
+
+        # Опрос (если разрешён)
+        if should_send_poll():
+            poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
+            time.sleep(3)
+            send_poll(poll["question"], poll["options"])
+            mark_poll_sent()
+
+        print("[wiki] Опубликовано: " + rewritten["title"])
+
+    posted.add(source_url)
+    return True
+
+
 def main():
     print("[bot] Запуск. DRY_RUN=" + str(DRY_RUN))
     print("[bot] Модель Gemini: " + str(GEMINI_MODEL))
-    print("[bot] Источников RSS: " + str(len(RSS_FEEDS)))
 
     poll_state = load_poll_state()
     print("[bot] Опросов сегодня: " + str(poll_state["count"]) + "/3")
 
     posted = load_posted()
+
+    # Решаем: этот запуск — Википедия или RSS?
+    if random.random() < WIKI_PROBABILITY:
+        print("[bot] Режим: ТЕМАТИЧЕСКАЯ СТАТЬЯ (Википедия)")
+        success = publish_wiki_article(posted)
+        if not success:
+            print("[bot] Википедия не сработала, переключаюсь на RSS")
+        else:
+            save_posted(posted)
+            print("[done] Опубликовано: 1 (wiki)")
+            return
+
+    # ==== ПОТОК RSS ====
+    print("[bot] Режим: НОВОСТИ (RSS)")
     published = 0
 
     for feed_url in RSS_FEEDS:
@@ -279,24 +413,17 @@ def main():
 
             full_text = extract_full_text(link)
             if not full_text:
-                print("[skip] Не удалось извлечь текст")
                 continue
             text_len = len(full_text)
-            if text_len < MIN_TEXT_LENGTH:
-                print("[skip] Текст короткий (" + str(text_len) + ")")
-                continue
-            if text_len > MAX_TEXT_LENGTH:
-                print("[skip] Текст длинный (" + str(text_len) + ")")
+            if text_len < MIN_TEXT_LENGTH or text_len > MAX_TEXT_LENGTH:
                 continue
             if has_blocked_words(full_text):
-                print("[skip] Заблокировано в тексте")
                 continue
 
             rewritten = rewrite_article(
                 title, full_text, GEMINI_API_KEY, GEMINI_MODEL, summary=summary
             )
-            if not rewritten or "title" not in rewritten or "text" not in rewritten:
-                print("[skip] Рерайт не удался")
+            if not rewritten:
                 continue
 
             telegraph_url = publish_to_telegraph(
@@ -309,28 +436,21 @@ def main():
             caption = build_post_text(rewritten, telegraph_url)
 
             if DRY_RUN:
-                print("[DRY_RUN] Картинка: " + str(image_url))
                 print("[DRY_RUN] " + caption[:200] + "...")
-                if should_send_poll():
-                    poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
-                    print("[DRY_RUN] Опрос: " + poll["question"])
             else:
                 sent = False
                 if image_url:
                     image_bytes, filename = download_image(image_url)
                     if image_bytes:
                         if len(caption) > 1024:
-                            caption_short = caption[:1000] + "…"
-                            sent = send_photo_bytes(image_bytes, filename, caption_short)
+                            sent = send_photo_bytes(image_bytes, filename, caption[:1000] + "…")
                             if sent and telegraph_url:
                                 send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
                         else:
                             sent = send_photo_bytes(image_bytes, filename, caption)
                 if not sent:
-                    print("[bot] Постим текстом (без картинки)")
                     send_message(caption)
 
-                # Опрос: только если should_send_poll() вернул True
                 if should_send_poll():
                     poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
                     time.sleep(3)
