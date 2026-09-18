@@ -1,8 +1,8 @@
 import json
 import re
-import google.generativeai as genai
+from google import genai
 
-print("[rewriter] === VERSION 5 ЗАГРУЖЕНА ===")
+print("[rewriter] === VERSION 6 ЗАГРУЖЕНА (google-genai) ===")
 
 REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и Там" о путешествиях.
 Перепиши статью ниже своими словами, сохранив ВСЕ факты, числа, названия и имена.
@@ -29,10 +29,9 @@ REWRITE_PROMPT = """Ты — автор телеграм-канала "Тут и
 
 # Модели в порядке приоритета — если первая не работает, пробуем следующую
 FALLBACK_MODELS = [
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
+    "gemini-1.5-flash",
 ]
 
 
@@ -67,20 +66,21 @@ def safe_json_parse(raw):
     return None
 
 
-def try_model(model_name, prompt, api_key):
+def try_model(client, model_name, prompt):
     """Одна попытка рерайта конкретной моделью."""
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(model_name)
-
         print("[rewriter] Пробую модель: " + model_name)
-        resp = model.generate_content(prompt)
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+        )
 
         raw = ""
-        if hasattr(resp, "text"):
-            raw = resp.text or ""
+        if hasattr(response, "text"):
+            raw = response.text or ""
         else:
-            raw = str(resp)
+            raw = str(response)
 
         print("[rewriter] RAW ответ (первые 600 символов):")
         print(raw[:600])
@@ -99,18 +99,23 @@ def try_model(model_name, prompt, api_key):
         return None
 
 
-def rewrite_article(title, body, api_key, model_name="gemini-3.6-flash"):
+def rewrite_article(title, body, api_key, model_name="gemini-2.5-flash"):
     if not api_key:
         print("[rewriter] Нет GEMINI_API_KEY")
         return None
 
     prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
 
-    # Формируем список: сначала указанная модель, потом fallback-и (без дублей)
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        print("[rewriter] Не удалось создать клиент: " + str(e))
+        return None
+
     models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
 
     for m in models_to_try:
-        result = try_model(m, prompt, api_key)
+        result = try_model(client, m, prompt)
         if result is not None:
             return result
 
