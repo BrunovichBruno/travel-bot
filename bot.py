@@ -11,7 +11,7 @@ from extractor import extract_full_text, extract_image
 from rewriter import rewrite_article
 from telegraph_publisher import publish_to_telegraph
 
-print("[bot] === BOT VERSION 6 ЗАГРУЖЕНА ===")
+print("[bot] === BOT VERSION 7 ЗАГРУЖЕНА (с опросами) ===")
 
 # ==== RSS ====
 RSS_FEEDS = [
@@ -83,7 +83,44 @@ def has_blocked_words(text):
     return any(bad in text for bad in BLOCKED_WORDS)
 
 
-def send_photo(photo_url, caption, reply_markup=None):
+# ==== ВОПРОСЫ И ВАРИАНТЫ ДЛЯ ОПРОСОВ ПО РУБРИКАМ ====
+
+POLLS = {
+    "Визы и документы": {
+        "question": "Сталкивались с этим при оформлении визы?",
+        "options": ["Да, было", "Нет, всё прошло гладко", "Планирую скоро", "Пока не актуально"],
+    },
+    "Цены и билеты": {
+        "question": "Готовы платить такие деньги?",
+        "options": ["Да, это нормально", "Дорого, поищу дешевле", "Слишком дёшево, есть подвох", "Не поеду"],
+    },
+    "Маршруты и направления": {
+        "question": "Поехали бы сюда?",
+        "options": ["Уже хочу! 🔥", "Может быть, подумаю", "Не моё направление", "Уже был(а) там"],
+    },
+    "Авиа и транспорт": {
+        "question": "Как предпочитаете путешествовать?",
+        "options": ["Самолёт — быстро", "Поезд — романтично", "Авто — свободно", "Автобус — бюджетно"],
+    },
+    "Отели и проживание": {
+        "question": "Что для вас важнее в отеле?",
+        "options": ["Чистота и комфорт", "Цена", "Расположение", "Питание и сервис"],
+    },
+    "_default": {
+        "question": "Что думаете об этом?",
+        "options": ["Круто! 🔥", "Интересно, но спорно", "Не моё", "Хочу попробовать"],
+    },
+}
+
+
+def get_poll_for_rubric(rubric_name):
+    """Возвращает dict с question и options для рубрики."""
+    return POLLS.get(rubric_name, POLLS["_default"])
+
+
+# ==== ОТПРАВКА В TELEGRAM ====
+
+def send_photo(photo_url, caption):
     """Отправляет фото с подписью в канал."""
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPhoto"
     payload = {
@@ -92,8 +129,6 @@ def send_photo(photo_url, caption, reply_markup=None):
         "caption": caption[:1024],
         "parse_mode": "HTML",
     }
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
     r = requests.post(url, json=payload, timeout=30)
     if r.status_code != 200:
         print("[telegram] sendPhoto ошибка: " + str(r.status_code) + " " + r.text)
@@ -101,7 +136,7 @@ def send_photo(photo_url, caption, reply_markup=None):
     return True
 
 
-def send_message(text, reply_markup=None):
+def send_message(text):
     """Отправляет текстовое сообщение в канал."""
     url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
     payload = {
@@ -110,37 +145,37 @@ def send_message(text, reply_markup=None):
         "parse_mode": "HTML",
         "disable_web_page_preview": False,
     }
-    if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
         print("[telegram] sendMessage ошибка: " + str(r.status_code) + " " + r.text)
 
 
-def build_reply_markup():
-    """Инлайн-кнопки-реакции под постом."""
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "🔥 Круто", "callback_data": "react_fire"},
-                {"text": "🤔 Спорно", "callback_data": "react_think"},
-            ],
-            [
-                {"text": "❤️ В избранное", "callback_data": "react_save"},
-                {"text": "✈️ Хочу туда", "callback_data": "react_want"},
-            ],
-        ]
+def send_poll(question, options):
+    """Отправляет нативный Telegram-опрос в канал."""
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPoll"
+    payload = {
+        "chat_id": TELEGRAM_CHANNEL_ID,
+        "question": question[:300],
+        "options": json.dumps(options, ensure_ascii=False),
+        "is_anonymous": True,
+        "allows_multiple_answers": False,
     }
+    r = requests.post(url, json=payload, timeout=20)
+    if r.status_code != 200:
+        print("[telegram] sendPoll ошибка: " + str(r.status_code) + " " + r.text)
+    else:
+        print("[telegram] Опрос отправлен: " + question)
 
+
+# ==== СБОРКА ПОСТА ====
 
 def build_post_text(rewritten, telegraph_url):
-    """Собирает текст поста с рубрикой, хэштегами и опросом."""
+    """Собирает текст поста с рубрикой и хэштегами."""
     title = rewritten["title"]
     teaser = rewritten.get("teaser", "")
     hashtags = rewritten.get("hashtags", "#ТутИТам #путешествия")
     rubric = rewritten.get("rubric_name", "")
 
-    # Иконка рубрики
     rubric_icons = {
         "Визы и документы": "🛂",
         "Цены и билеты": "💰",
@@ -225,7 +260,6 @@ def main():
                 print("[skip] Заблокировано в тексте: " + title[:80])
                 continue
 
-            # Рерайт (теперь с передачей summary для определения стиля)
             rewritten = rewrite_article(
                 title, full_text, GEMINI_API_KEY, GEMINI_MODEL, summary=summary
             )
@@ -233,43 +267,41 @@ def main():
                 print("[skip] Рерайт не удался: " + link)
                 continue
 
-            # Telegraph
             telegraph_url = publish_to_telegraph(
                 title=rewritten["title"],
                 text=rewritten["text"],
                 source_url=link,
             )
 
-            # Картинка
             image_url = extract_image(link)
             if image_url:
-                print("[bot] Картинка найдена: " + image_url[:80])
+                print("[bot] Картинка найдена")
             else:
-                print("[bot] Картинка не найдена, постим текстом")
+                print("[bot] Картинка не найдена")
 
-            # Формируем пост
             caption = build_post_text(rewritten, telegraph_url)
-            reply_markup = build_reply_markup()
 
             if DRY_RUN:
                 print("[DRY_RUN] " + caption[:300] + "...")
+                poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
+                print("[DRY_RUN] Опрос: " + poll["question"] + " | " + str(poll["options"]))
             else:
                 sent = False
                 if image_url:
-                    # Если подпись слишком длинная для фото — сокращаем
                     if len(caption) > 1024:
-                        short = build_post_text(rewritten, telegraph_url)
-                        # Обрезаем до 1000 и добавляем многоточие
-                        caption_short = short[:1000] + "…"
-                        sent = send_photo(image_url, caption_short, reply_markup)
+                        caption_short = caption[:1000] + "…"
+                        sent = send_photo(image_url, caption_short)
                         if sent and telegraph_url:
-                            # Дополняем ссылкой отдельным сообщением
                             send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
                     else:
-                        sent = send_photo(image_url, caption, reply_markup)
-
+                        sent = send_photo(image_url, caption)
                 if not sent:
-                    send_message(caption, reply_markup)
+                    send_message(caption)
+
+                # Опрос отправляем отдельным сообщением
+                poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
+                time.sleep(3)
+                send_poll(poll["question"], poll["options"])
 
                 print("[bot] Опубликовано: " + rewritten["title"])
 
