@@ -67,11 +67,7 @@ def rewrite_article(title: str, body: str, api_key: str, model_name: str = "gemi
         prompt = REWRITE_PROMPT.format(title=title, body=body[:8000])
 
         print(f"[rewriter] Отправляю в Gemini, длина промпта: {len(prompt)}")
-        resp = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"},
-        )
-
+                resp = model.generate_content(prompt)
         raw = resp.text if hasattr(resp, "text") else str(resp)
         print(f"[rewriter] RAW ответ (первые 600 символов):\n{raw[:600]}\n---END RAW---")
 
