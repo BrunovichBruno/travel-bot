@@ -11,6 +11,8 @@ from extractor import extract_full_text
 from rewriter import rewrite_article
 from telegraph_publisher import publish_to_telegraph
 
+print("[bot] === BOT VERSION 3 ЗАГРУЖЕНА ===")
+
 # ==== НАСТРОЙКИ ====
 RSS_FEEDS = [
     "https://lenta.ru/rss/news/travel",
@@ -47,13 +49,13 @@ def save_posted(posted):
     )
 
 
-def matches_keywords(text: str) -> bool:
+def matches_keywords(text):
     text = text.lower()
     return any(kw in text for kw in KEYWORDS)
 
 
-def send_to_telegram(text: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+def send_to_telegram(text):
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHANNEL_ID,
         "text": text[:4000],
@@ -62,10 +64,15 @@ def send_to_telegram(text: str):
     }
     r = requests.post(url, json=payload, timeout=20)
     if r.status_code != 200:
-        print(f"[telegram] Ошибка: {r.status_code} {r.text}")
+        print("[telegram] Ошибка: " + str(r.status_code) + " " + r.text)
 
 
 def main():
+    print("[bot] Запуск. DRY_RUN=" + str(DRY_RUN))
+    print("[bot] Gemini ключ задан: " + str(bool(GEMINI_API_KEY)))
+    print("[bot] Telegram токен задан: " + str(bool(TELEGRAM_BOT_TOKEN)))
+    print("[bot] Канал: " + str(TELEGRAM_CHANNEL_ID))
+
     posted = load_posted()
     published = 0
 
@@ -75,7 +82,7 @@ def main():
         try:
             feed = feedparser.parse(feed_url)
         except Exception as e:
-            print(f"[rss] Упал фид {feed_url}: {e}")
+            print("[rss] Упал фид " + feed_url + ": " + str(e))
             continue
 
         for entry in feed.entries:
@@ -92,15 +99,16 @@ def main():
             if not matches_keywords(title + " " + summary):
                 continue
 
-            print(f"[process] {link}")
+            print("[process] " + link)
+
             full_text = extract_full_text(link)
             if not full_text or len(full_text) < 300:
-                print(f"[skip] Мало текста: {link}")
+                print("[skip] Мало текста: " + link)
                 continue
 
             rewritten = rewrite_article(title, full_text, GEMINI_API_KEY, GEMINI_MODEL)
             if not rewritten or "title" not in rewritten or "text" not in rewritten:
-                print(f"[skip] Рерайт не удался: {link}")
+                print("[skip] Рерайт не удался: " + link)
                 continue
 
             telegraph_url = publish_to_telegraph(
@@ -111,29 +119,30 @@ def main():
 
             if telegraph_url:
                 post = (
-                    f"<b>{rewritten['title']}</b>\n\n"
-                    f"{rewritten.get('teaser', '')}\n\n"
-                    f"👉 <a href='{telegraph_url}'>Читать полностью</a>\n\n"
-                    f"{HASHTAGS}"
+                    "<b>" + rewritten["title"] + "</b>\n\n"
+                    + rewritten.get("teaser", "") + "\n\n"
+                    + "👉 <a href='" + telegraph_url + "'>Читать полностью</a>\n\n"
+                    + HASHTAGS
                 )
             else:
                 post = (
-                    f"<b>{rewritten['title']}</b>\n\n"
-                    f"{rewritten['text'][:3000]}\n\n"
-                    f"Источник: {link}\n\n{HASHTAGS}"
+                    "<b>" + rewritten["title"] + "</b>\n\n"
+                    + rewritten["text"][:3000] + "\n\n"
+                    + "Источник: " + link + "\n\n" + HASHTAGS
                 )
 
             if DRY_RUN:
-                print(f"[DRY_RUN] {post[:300]}...")
+                print("[DRY_RUN] " + post[:300] + "...")
             else:
                 send_to_telegram(post)
+                print("[bot] Опубликовано: " + rewritten["title"])
 
             posted.add(link)
             published += 1
-            time.sleep(random.randint(30, 120))
+            time.sleep(random.randint(5, 15))
 
     save_posted(posted)
-    print(f"[done] Опубликовано: {published}")
+    print("[done] Опубликовано: " + str(published))
 
 
 if __name__ == "__main__":
