@@ -23,36 +23,53 @@ from telegram_history import (
     fetch_telegram_links, merge_history,
 )
 
-print("[bot] === BOT VERSION 12 ЗАГРУЖЕНА ===")
+print("[bot] === BOT VERSION 11 (Тут и Там, больше источников) ЗАГРУЖЕНА ===")
 
+# Больше источников для тревел-канала
 RSS_FEEDS = [
     "https://lenta.ru/rss/news/travel",
     "https://lenta.ru/rss/articles/travel",
     "https://ria.ru/export/rss2/index.xml",
-    "https://www.tourprom.ru/rss/",
-    "https://www.rbc.ru/rss/travel",
     "https://tass.ru/rss/v2.xml",
-    "https://www.atorus.ru/rss/news.xml",
     "https://www.interfax.ru/rss.asp",
+    "https://www.rbc.ru/rss/finance",
+    "https://www.vedomosti.ru/rss/news",
+    "https://www.forbes.ru/newrss.xml",
+    "https://www.banki.ru/xml/news.rss",
+    "https://frankmedia.ru/feed/",
+    "https://thebell.io/feed/",
+    "https://rueconomics.ru/rss",
+    "https://1prime.ru/export/rss2/index.xml",
 ]
 
-KEYWORDS = ["туризм", "путешеств", "тур", "отдых", "виза", "авиа",
-            "отель", "курорт", "билет", "авиакомпания", "рейс",
-            "направление", "страна", "город", "пляж", "экскурсия"]
+KEYWORDS = [
+    "туризм", "путешеств", "тур", "отдых", "виза", "авиа",
+    "отель", "курорт", "билет", "авиакомпания", "рейс",
+    "направление", "страна", "город", "пляж", "экскурсия",
+    "достопримечательн", "маршрут", "поездк", "отпуск",
+    "кухн", "блюд", "ресторан", "отдыхающ",
+]
 
-BLOCKED_WORDS = ["убил", "убийств", "погиб", "погибл", "смерть", "умер",
-                 "утопул", "утопленник", "изнасил", "ограбил", "ограблени",
-                 "задержан", "арестован", "осужден", "тюрьм", "наркотик",
-                 "криминал", "происшеств", "катастроф", "крушени", "авари",
-                 "теракт", "дтп", "пожар", "утону", "зарезал", "застрелил",
-                 "избил", "избиени", "насили", "домогательств", "разврат"]
+BLOCKED_WORDS = [
+    "убил", "убийств", "погиб", "погибл", "смерть", "умер",
+    "утопул", "утопленник", "изнасил", "ограбил", "ограблени",
+    "задержан", "арестован", "осужден", "тюрьм", "наркотик",
+    "криминал", "происшеств", "катастроф", "крушени", "авари",
+    "теракт", "дтп", "пожар", "утону", "зарезал", "застрелил",
+    "избил", "избиени", "насили", "домогательств", "разврат",
+    "путин", "кремл", "спецоперац", "военн", "арми", "оружи",
+    "беспилотник", "дрон", "аэс", "конфликт", "обстрел",
+    "мобилизац", "минобороны", "генштаб", "нато",
+    "долин", "артист", "певиц", "актер", "звезд", "селебрит",
+    "скандал",
+]
 
-MAX_POSTS_PER_RUN = 3
+MAX_POSTS_PER_RUN = 4
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 MIN_TEXT_LENGTH = 500
 MAX_TEXT_LENGTH = 15000
-DELAY_MIN = 600
-DELAY_MAX = 1200
+DELAY_MIN = 180    # было 600 — уменьшаем
+DELAY_MAX = 300    # было 1200
 WIKI_PROBABILITY = 0.3
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -215,31 +232,23 @@ def publish_wiki_article(posted, tg_history):
     wiki_data = get_random_wiki_article()
     if not wiki_data:
         return False
-
     source_url = "https://ru.wikipedia.org/wiki/" + wiki_data["title"].replace(" ", "_")
-
     if is_posted(source_url, posted):
         print("[wiki] Дубликат в posted.json")
         return False
-
     if check_against_telegram(source_url, tg_history):
         print("[wiki] Дубликат в Telegram")
         mark_posted(source_url, posted)
         return False
-
     rewritten = rewrite_wiki_article(wiki_data)
     if not rewritten:
         return False
-
     telegraph_url = publish_to_telegraph(
         title=rewritten["title"], text=rewritten["text"], source_url=source_url)
-
     image_bytes, filename = None, None
     if wiki_data["image"]:
         image_bytes, filename = download_image(wiki_data["image"])
-
     caption = build_post_text(rewritten, telegraph_url)
-
     if DRY_RUN:
         print("[DRY_RUN][wiki] " + caption[:200])
     else:
@@ -253,13 +262,11 @@ def publish_wiki_article(posted, tg_history):
                 sent = send_photo_bytes(image_bytes, filename, caption)
         if not sent:
             send_message(caption)
-
         if should_send_poll():
             poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
             time.sleep(3)
             send_poll(poll["question"], poll["options"])
             mark_poll_sent()
-
     mark_posted(source_url, posted)
     return True
 
@@ -267,6 +274,7 @@ def publish_wiki_article(posted, tg_history):
 def main():
     print("[bot] Запуск. DRY_RUN=" + str(DRY_RUN))
     print("[bot] Модель: " + str(GEMINI_MODEL))
+    print("[bot] Источников RSS: " + str(len(RSS_FEEDS)))
 
     posted = load_posted()
     print("[bot] Записей в posted: " + str(len(posted)))
@@ -298,6 +306,8 @@ def main():
         except Exception:
             continue
 
+        print("[rss] " + feed_url + " — записей: " + str(len(feed.entries)))
+
         for entry in feed.entries:
             if published >= MAX_POSTS_PER_RUN:
                 break
@@ -318,13 +328,23 @@ def main():
             if not matches_keywords(title + " " + summary):
                 continue
             if has_blocked_words(title + " " + summary):
+                print("[skip] Заблокировано: " + title[:80])
                 continue
 
             print("[process] " + link)
             full_text = extract_full_text(link)
-            if not full_text or not (MIN_TEXT_LENGTH <= len(full_text) <= MAX_TEXT_LENGTH):
+            if not full_text:
+                print("[skip] Не удалось извлечь текст: " + link[:80])
+                continue
+            text_len = len(full_text)
+            if text_len < MIN_TEXT_LENGTH:
+                print("[skip] Текст короткий (" + str(text_len) + "): " + link[:80])
+                continue
+            if text_len > MAX_TEXT_LENGTH:
+                print("[skip] Текст длинный (" + str(text_len) + "): " + link[:80])
                 continue
             if has_blocked_words(full_text):
+                print("[skip] Заблокировано в тексте: " + title[:80])
                 continue
 
             rewritten = rewrite_article(title, full_text, GEMINI_API_KEY, GEMINI_MODEL, summary=summary)
