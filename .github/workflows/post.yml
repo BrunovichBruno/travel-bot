@@ -2,8 +2,8 @@ name: Автопостинг в Telegram-канал
 
 on:
   schedule:
-    # Каждые 2 часа с 5:00 до 23:00 UTC (08:00–02:00 МСК), все дни
-    - cron: '0 5-23/2 * * *'
+    # Каждые 2 часа с 3:00 до 23:00 UTC (06:00–02:00 МСК)
+    - cron: '0 3-23/2 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -45,13 +45,10 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           touch posted.json poll_state.json telegram_history.json
           git add posted.json poll_state.json telegram_history.json
-          echo "--- git status ---"
-          git status
           if git diff --cached --quiet; then
             echo "Нечего коммитить"
           else
             git commit -m "Update state [skip ci]"
             git pull --rebase origin main || true
-            git push
-            echo "Коммит выполнен"
+            git push || echo "Nothing to push"
           fi
