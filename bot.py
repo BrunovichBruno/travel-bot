@@ -23,23 +23,19 @@ from telegram_history import (
     fetch_telegram_links, merge_history,
 )
 
-print("[bot] === BOT VERSION 11 (Тут и Там, больше источников) ЗАГРУЖЕНА ===")
+print("[bot] === BOT VERSION 12 (Тут и Там, тревел-источники) ЗАГРУЖЕНА ===")
 
-# Больше источников для тревел-канала
+# Тревел-источники: 5 работающих + 4 новых (проверить в логе)
 RSS_FEEDS = [
     "https://lenta.ru/rss/news/travel",
     "https://lenta.ru/rss/articles/travel",
     "https://ria.ru/export/rss2/index.xml",
     "https://tass.ru/rss/v2.xml",
     "https://www.interfax.ru/rss.asp",
-    "https://www.rbc.ru/rss/finance",
-    "https://www.vedomosti.ru/rss/news",
-    "https://www.forbes.ru/newrss.xml",
-    "https://www.banki.ru/xml/news.rss",
-    "https://frankmedia.ru/feed/",
-    "https://thebell.io/feed/",
-    "https://rueconomics.ru/rss",
-    "https://1prime.ru/export/rss2/index.xml",
+    "https://www.tourprom.ru/rss/",
+    "https://www.atorus.ru/rss/news.xml",
+    "https://www.travel.ru/rss/",
+    "https://www.vesti.ru/rss/travel.xml",
 ]
 
 KEYWORDS = [
@@ -51,25 +47,29 @@ KEYWORDS = [
 ]
 
 BLOCKED_WORDS = [
+    # Криминал и происшествия
     "убил", "убийств", "погиб", "погибл", "смерть", "умер",
     "утопул", "утопленник", "изнасил", "ограбил", "ограблени",
     "задержан", "арестован", "осужден", "тюрьм", "наркотик",
     "криминал", "происшеств", "катастроф", "крушени", "авари",
     "теракт", "дтп", "пожар", "утону", "зарезал", "застрелил",
     "избил", "избиени", "насили", "домогательств", "разврат",
+    "избил", "укусил", "напал", "драк", "скандал",
+    # Политика и война
     "путин", "кремл", "спецоперац", "военн", "арми", "оружи",
     "беспилотник", "дрон", "аэс", "конфликт", "обстрел",
-    "мобилизац", "минобороны", "генштаб", "нато",
+    "мобилизац", "минобороны", "генштаб", "нато", "трамп",
+    "байден", "зеленск", "украин", "националист",
+    # Шоу-бизнес
     "долин", "артист", "певиц", "актер", "звезд", "селебрит",
-    "скандал",
 ]
 
 MAX_POSTS_PER_RUN = 4
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() == "true"
 MIN_TEXT_LENGTH = 500
 MAX_TEXT_LENGTH = 15000
-DELAY_MIN = 180    # было 600 — уменьшаем
-DELAY_MAX = 300    # было 1200
+DELAY_MIN = 180
+DELAY_MAX = 300
 WIKI_PROBABILITY = 0.3
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
