@@ -107,4 +107,414 @@ POLLS = {
     "Маршруты и направления": {"question": "Поехали бы сюда?",
         "options": ["Хочу! 🔥", "Подумаю", "Не моё", "Уже был(а)"]},
     "Авиа и транспорт": {"question": "Как предпочитаете?",
-        "options": ["Самолёт", "Поезд", "Авто
+        "options": ["Самолёт", "Поезд", "Авто", "Автобус"]},
+    "Отели и проживание": {"question": "Что важнее?",
+        "options": ["Комфорт", "Цена", "Локация", "Сервис"]},
+    "Блюда и кухня": {"question": "Попробовали бы?",
+        "options": ["Уже пробовал(а) 🔥", "Обязательно", "Не моё", "Слышал(а)"]},
+    "Достопримечательности": {"question": "Хотели бы увидеть?",
+        "options": ["Да! ✨", "Интересно", "Уже видел(а)", "Не моё"]},
+    "Интересные факты": {"question": "Знали об этом?",
+        "options": ["Впервые", "Знал(а)", "Очевидно", "Интересно!"]},
+    "Лайфхаки в путешествиях": {"question": "Пригодится?",
+        "options": ["Да, полезно! 🔥", "Уже знаю", "Не моё", "Сохраню"]},
+    "_default": {"question": "Что думаете?",
+        "options": ["Круто! 🔥", "Спорно", "Не моё", "Попробую"]},
+}
+
+
+def get_poll_for_rubric(rubric_name):
+    return POLLS.get(rubric_name, POLLS["_default"])
+
+
+def download_image(image_url):
+    try:
+        r = requests.get(image_url, headers=IMAGE_HEADERS, timeout=25, stream=True)
+        if r.status_code != 200:
+            return None, None
+        ct = r.headers.get("Content-Type", "").lower()
+        if "image" not in ct:
+            return None, None
+        data = r.content
+        if len(data) < 5000 or len(data) > 10 * 1024 * 1024:
+            return None, None
+        ext = "png" if "png" in ct else ("webp" if "webp" in ct else "jpg")
+        return data, "photo." + ext
+    except Exception:
+        return None, None
+
+
+def send_photo_bytes(image_bytes, filename, caption):
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPhoto"
+    files = {"photo": (filename, image_bytes)}
+    data = {"chat_id": TELEGRAM_CHANNEL_ID, "caption": caption[:1024], "parse_mode": "HTML"}
+    try:
+        r = requests.post(url, data=data, files=files, timeout=60)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def send_message(text):
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "text": text[:4000],
+               "parse_mode": "HTML", "disable_web_page_preview": False}
+    requests.post(url, json=payload, timeout=20)
+
+
+def send_poll(question, options):
+    url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendPoll"
+    payload = {"chat_id": TELEGRAM_CHANNEL_ID, "question": question[:300],
+               "options": json.dumps(options, ensure_ascii=False),
+               "is_anonymous": True, "allows_multiple_answers": False}
+    requests.post(url, json=payload, timeout=20)
+
+
+def build_post_text(rewritten, telegraph_url):
+    title = rewritten["title"]
+    teaser = rewritten.get("teaser", "")
+    hashtags = rewritten.get("hashtags", "#ТутИТам #путешествия")
+    rubric = rewritten.get("rubric_name", "")
+    icons = {
+        "Визы и документы": "🛂", "Цены и билеты": "💰",
+        "Маршруты и направления": "🗺", "Авиа и транспорт": "✈️",
+        "Отели и проживание": "🏨", "Блюда и кухня": "🍜",
+        "Достопримечательности": "🏛", "Интересные факты": "💡",
+        "Лайфхаки в путешествиях": "🎒",
+    }
+    icon = icons.get(rubric, "🌍")
+    parts = []
+    if rubric:
+        parts.append(icon + " <b>" + rubric + "</b>")
+        parts.append("")
+    parts.append("<b>" + title + "</b>")
+    parts.append("")
+    if teaser:
+        parts.append(teaser)
+        parts.append("")
+    if telegraph_url:
+        parts.append("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+    parts.append("")
+    parts.append(hashtags)
+    return "\n".join(parts)
+
+
+def rewrite_wiki_article(wiki_data):
+    rubric = wiki_data["rubric"]
+    body = wiki_data["text"]
+    title = wiki_data["title"]
+    if wiki_data["lang"] == "en":
+        from wiki_prompts import PROMPT_TRANSLATE
+        prompt = PROMPT_TRANSLATE.format(title=title, body=body[:6000])
+    else:
+        prompt = get_prompt_for_rubric(rubric).format(title=title, body=body[:8000])
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception:
+        return None
+
+    from rewriter import FALLBACK_MODELS, try_model
+
+    for m in [GEMINI_MODEL] + [x for x in FALLBACK_MODELS if x != GEMINI_MODEL]:
+        result = try_model(client, m, prompt)
+        if result:
+            result["rubric_name"] = rubric
+            result["hashtags"] = get_hashtags_for_rubric(rubric)
+            result["style"] = "wiki"
+            return result
+    return None
+
+
+def check_against_telegram(url, tg_history):
+    if not url:
+        return False
+    normalized = normalize_url(url)
+    for tg_url in tg_history:
+        if normalize_url(tg_url) == normalized:
+            return True
+    return False
+
+
+def publish_wiki_article(posted, tg_history):
+    print("[wiki] Запуск тематического потока...")
+    wiki_data = get_random_wiki_article()
+    if not wiki_data:
+        return False
+    source_url = "https://ru.wikipedia.org/wiki/" + wiki_data["title"].replace(" ", "_")
+    if is_posted(source_url, posted):
+        print("[wiki] Дубликат в posted.json")
+        return False
+    if check_against_telegram(source_url, tg_history):
+        print("[wiki] Дубликат в Telegram")
+        mark_posted(source_url, posted)
+        return False
+    rewritten = rewrite_wiki_article(wiki_data)
+    if not rewritten:
+        return False
+    telegraph_url = publish_to_telegraph(
+        title=rewritten["title"], text=rewritten["text"], source_url=source_url)
+    image_bytes, filename = None, None
+    if wiki_data["image"]:
+        image_bytes, filename = download_image(wiki_data["image"])
+    caption = build_post_text(rewritten, telegraph_url)
+    if DRY_RUN:
+        print("[DRY_RUN][wiki] " + caption[:200])
+    else:
+        sent = False
+        if image_bytes:
+            if len(caption) > 1024:
+                sent = send_photo_bytes(image_bytes, filename, caption[:1000] + "…")
+                if sent and telegraph_url:
+                    send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+            else:
+                sent = send_photo_bytes(image_bytes, filename, caption)
+        if not sent:
+            send_message(caption)
+        if should_send_poll():
+            poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
+            time.sleep(3)
+            send_poll(poll["question"], poll["options"])
+            mark_poll_sent()
+    mark_posted(source_url, posted)
+    return True
+
+
+def publish_synthesis_article(posted, tg_history):
+    """Синтез статьи из нескольких источников."""
+    print("[synth] Запуск синтеза...")
+
+    all_articles = []
+    for feed_url in RSS_FEEDS:
+        try:
+            feed = feedparser.parse(feed_url)
+        except Exception:
+            continue
+        for entry in feed.entries[:20]:
+            link = entry.get("link", "")
+            title = entry.get("title", "")
+            summary = entry.get("summary", "")
+            if not link or not title:
+                continue
+            if is_posted(link, posted):
+                continue
+            if check_against_telegram(link, tg_history):
+                continue
+            if not matches_keywords(title + " " + summary):
+                continue
+            if has_blocked_words(title + " " + summary):
+                continue
+            all_articles.append({
+                "title": title,
+                "link": link,
+                "summary": summary,
+            })
+
+    print("[synth] Собрано статей: " + str(len(all_articles)))
+
+    if len(all_articles) < 3:
+        print("[synth] Мало статей для синтеза")
+        return False
+
+    from topic_grouper import group_by_topic
+    groups = group_by_topic(all_articles, min_group_size=3)
+
+    if not groups:
+        print("[synth] Групп не найдено")
+        return False
+
+    group = groups[0]
+    print("[synth] Тема: " + group[0]["title"])
+
+    articles_data = []
+    for a in group[:5]:
+        full_text = extract_full_text(a["link"])
+        if full_text and len(full_text) > 300:
+            articles_data.append({
+                "title": a["title"],
+                "text": full_text,
+            })
+
+    if len(articles_data) < 2:
+        print("[synth] Мало статей с текстом")
+        return False
+
+    from synthesizer import synthesize_article
+    result = synthesize_article(articles_data, GEMINI_API_KEY, GEMINI_MODEL)
+    if not result:
+        return False
+
+    summary = " ".join(a["summary"] for a in group[:3])
+    rubric = detect_rubric(result["title"], summary, result["text"])
+    result["rubric_name"] = rubric["name"]
+    result["hashtags"] = rubric["hashtags"]
+
+    source_url = group[0]["link"]
+    telegraph_url = publish_to_telegraph(
+        title=result["title"], text=result["text"], source_url=source_url)
+
+    image_url = extract_image(group[0]["link"])
+    image_bytes, filename = None, None
+    if image_url:
+        image_bytes, filename = download_image(image_url)
+
+    caption = build_post_text(result, telegraph_url)
+    if DRY_RUN:
+        print("[DRY_RUN][synth] " + caption[:200])
+    else:
+        sent = False
+        if image_bytes:
+            if len(caption) > 1024:
+                sent = send_photo_bytes(image_bytes, filename, caption[:1000] + "…")
+                if sent and telegraph_url:
+                    send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+            else:
+                sent = send_photo_bytes(image_bytes, filename, caption)
+        if not sent:
+            send_message(caption)
+
+        if should_send_poll():
+            poll = get_poll_for_rubric(result.get("rubric_name", ""))
+            time.sleep(3)
+            send_poll(poll["question"], poll["options"])
+            mark_poll_sent()
+
+    for a in group:
+        mark_posted(a["link"], posted)
+
+    print("[synth] Опубликовано: " + result["title"])
+    return True
+
+
+def main():
+    print("[bot] Запуск. DRY_RUN=" + str(DRY_RUN))
+    print("[bot] Модель: " + str(GEMINI_MODEL))
+    print("[bot] Источников RSS: " + str(len(RSS_FEEDS)))
+
+    posted = load_posted()
+    print("[bot] Записей в posted: " + str(len(posted)))
+
+    tg_cache = load_local_history()
+    fresh = fetch_telegram_links(TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, limit=100)
+    tg_history = merge_history(tg_cache, fresh)
+    save_local_history(tg_history)
+    print("[bot] Ссылок в Telegram-истории: " + str(len(tg_history)))
+
+    posted = cleanup_old(posted)
+
+    r = random.random()
+
+    if r < WIKI_PROBABILITY:
+        print("[bot] Режим: WIKI")
+        if publish_wiki_article(posted, tg_history):
+            save_posted(posted)
+            print("[done] Опубликовано: 1 (wiki)")
+            return
+        print("[bot] WIKI не сработала")
+
+    elif r < WIKI_PROBABILITY + SYNTH_PROBABILITY:
+        print("[bot] Режим: SYNTHESIS")
+        if publish_synthesis_article(posted, tg_history):
+            save_posted(posted)
+            print("[done] Опубликовано: 1 (synthesis)")
+            return
+        print("[bot] SYNTHESIS не сработала, иду в RSS")
+
+    print("[bot] Режим: RSS")
+    published = 0
+
+    for feed_url in RSS_FEEDS:
+        if published >= MAX_POSTS_PER_RUN:
+            break
+        try:
+            feed = feedparser.parse(feed_url)
+        except Exception:
+            continue
+
+        print("[rss] " + feed_url + " — записей: " + str(len(feed.entries)))
+
+        for entry in feed.entries:
+            if published >= MAX_POSTS_PER_RUN:
+                break
+
+            link = entry.get("link", "")
+            if not link:
+                continue
+            if is_posted(link, posted):
+                continue
+            if check_against_telegram(link, tg_history):
+                print("[skip] Дубликат в Telegram: " + link[:80])
+                mark_posted(link, posted)
+                continue
+
+            title = entry.get("title", "")
+            summary = entry.get("summary", "")
+
+            if not matches_keywords(title + " " + summary):
+                continue
+            if has_blocked_words(title + " " + summary):
+                print("[skip] Заблокировано: " + title[:80])
+                continue
+
+            print("[process] " + link)
+            full_text = extract_full_text(link)
+            if not full_text:
+                print("[skip] Не удалось извлечь текст: " + link[:80])
+                continue
+            text_len = len(full_text)
+            if text_len < MIN_TEXT_LENGTH:
+                print("[skip] Текст короткий (" + str(text_len) + "): " + link[:80])
+                continue
+            if text_len > MAX_TEXT_LENGTH:
+                print("[skip] Текст длинный (" + str(text_len) + "): " + link[:80])
+                continue
+            if has_blocked_words(full_text):
+                print("[skip] Заблокировано в тексте: " + title[:80])
+                continue
+
+            rewritten = rewrite_article(title, full_text, GEMINI_API_KEY, GEMINI_MODEL, summary=summary)
+            if not rewritten:
+                continue
+
+            telegraph_url = publish_to_telegraph(
+                title=rewritten["title"], text=rewritten["text"], source_url=link)
+
+            image_url = extract_image(link)
+            caption = build_post_text(rewritten, telegraph_url)
+
+            if DRY_RUN:
+                print("[DRY_RUN] " + caption[:150])
+            else:
+                sent = False
+                if image_url:
+                    ib, fn = download_image(image_url)
+                    if ib:
+                        if len(caption) > 1024:
+                            sent = send_photo_bytes(ib, fn, caption[:1000] + "…")
+                            if sent and telegraph_url:
+                                send_message("👉 <a href='" + telegraph_url + "'>Читать полностью</a>")
+                        else:
+                            sent = send_photo_bytes(ib, fn, caption)
+                if not sent:
+                    send_message(caption)
+
+                if should_send_poll():
+                    poll = get_poll_for_rubric(rewritten.get("rubric_name", ""))
+                    time.sleep(3)
+                    send_poll(poll["question"], poll["options"])
+                    mark_poll_sent()
+
+                print("[bot] Опубликовано: " + rewritten["title"])
+
+            mark_posted(link, posted)
+            published += 1
+
+            if published < MAX_POSTS_PER_RUN:
+                time.sleep(random.randint(DELAY_MIN, DELAY_MAX))
+
+    save_posted(posted)
+    print("[done] Опубликовано: " + str(published))
+
+
+if __name__ == "__main__":
+    main()
