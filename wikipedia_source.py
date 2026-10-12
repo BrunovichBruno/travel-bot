@@ -1,35 +1,48 @@
 import random
 import requests
 
-print("[wiki] === WIKIPEDIA SOURCE ЗАГРУЖЕН ===")
+print("[wiki] === WIKIPEDIA SOURCE v4 ЗАГРУЖЕН ===")
 
 WIKI_API = "https://ru.wikipedia.org/w/api.php"
 WIKI_API_EN = "https://en.wikipedia.org/w/api.php"
 
-HEADERS = {
-    "User-Agent": "TravelBot/1.0 (https://github.com/travel-bot; contact@example.com)"
-}
+HEADERS = {"User-Agent": "TravelBot/4.0 (contact@example.com)"}
 
 WIKI_CATEGORIES = [
+    # Блюда и кухня
     ("Национальные кухни", "Блюда и кухня", "ru"),
     ("Блюда по странам", "Блюда и кухня", "ru"),
     ("Традиционные блюда", "Блюда и кухня", "ru"),
+    ("Кухни народов мира", "Блюда и кухня", "ru"),
+
+    # Достопримечательности
     ("Достопримечательности по странам", "Достопримечательности", "ru"),
     ("Всемирное наследие", "Достопримечательности", "ru"),
     ("Туристические объекты", "Достопримечательности", "ru"),
+    ("Музеи по странам", "Достопримечательности", "ru"),
+
+    # Интересные факты
     ("Культура по странам", "Интересные факты", "ru"),
     ("Традиции", "Интересные факты", "ru"),
+    ("Национальные символы", "Интересные факты", "ru"),
+    ("Обычаи", "Интересные факты", "ru"),
+
+    # Лайфхаки
+    ("Туризм", "Лайфхаки в путешествиях", "ru"),
+    ("Путешествия", "Лайфхаки в путешествиях", "ru"),
+
+    # Английские
     ("National dishes", "Блюда и кухня", "en"),
     ("World Heritage Sites", "Достопримечательности", "en"),
+    ("Tourist attractions", "Достопримечательности", "en"),
+    ("Travel", "Лайфхаки в путешествиях", "en"),
 ]
 
 
 def _get_category_members(api_url, category, limit=30):
-    params = {
-        "action": "query", "list": "categorymembers",
-        "cmtitle": "Category:" + category, "cmlimit": str(limit),
-        "cmnamespace": "0", "format": "json",
-    }
+    params = {"action": "query", "list": "categorymembers",
+              "cmtitle": "Category:" + category, "cmlimit": str(limit),
+              "cmnamespace": "0", "format": "json"}
     try:
         r = requests.get(api_url, params=params, headers=HEADERS, timeout=20)
         r.raise_for_status()
@@ -40,11 +53,9 @@ def _get_category_members(api_url, category, limit=30):
 
 
 def _get_page_content(api_url, page_title):
-    params = {
-        "action": "query", "titles": page_title,
-        "prop": "extracts|pageimages", "explaintext": "1",
-        "piprop": "original", "format": "json",
-    }
+    params = {"action": "query", "titles": page_title,
+              "prop": "extracts|pageimages", "explaintext": "1",
+              "piprop": "original", "format": "json"}
     try:
         r = requests.get(api_url, params=params, headers=HEADERS, timeout=20)
         r.raise_for_status()
@@ -60,27 +71,18 @@ def _get_page_content(api_url, page_title):
 
 def get_random_wiki_article():
     random.shuffle(WIKI_CATEGORIES)
-
     for category, rubric, lang in WIKI_CATEGORIES:
         api_url = WIKI_API if lang == "ru" else WIKI_API_EN
         print("[wiki] Категория: " + category + " (" + lang + ")")
-
         members = _get_category_members(api_url, category, limit=30)
         if not members:
             continue
         random.shuffle(members)
-
         for page_title in members[:10]:
             text, image = _get_page_content(api_url, page_title)
-            if text and len(text) > 500:
+            if text and len(text) > 800:
                 print("[wiki] Нашёл: " + page_title + " (" + str(len(text)) + " симв.)")
-                return {
-                    "title": page_title,
-                    "text": text[:8000],
-                    "image": image,
-                    "category": category,
-                    "rubric": rubric,
-                    "lang": lang,
-                }
+                return {"title": page_title, "text": text[:8000], "image": image,
+                        "category": category, "rubric": rubric, "lang": lang}
     print("[wiki] Ничего не нашёл")
     return None
